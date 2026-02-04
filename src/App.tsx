@@ -15,6 +15,7 @@ export default function App() {
   const [lastResult, setLastResult] = useState<unknown>(null)
   const [config, setConfig] = useState<PipelineConfigPayload | null>(null)
   const [wsEvents, setWsEvents] = useState<WsEvent[]>([])
+  const [isWsConnected, setIsWsConnected] = useState<boolean | undefined>(undefined)
 
   const handleRun = useCallback((runId: string, cfg: PipelineConfigPayload) => {
     setLastRunId(runId)
@@ -41,6 +42,7 @@ export default function App() {
             onRun={handleRun}
             onExportConfig={(cfg) => setConfig(cfg)}
             setWsEvents={setWsEvents}
+            setIsConnected={setIsWsConnected}
             onDone={handleDone}
           />
         )}
@@ -49,6 +51,7 @@ export default function App() {
             runId={lastRunId}
             config={config}
             wsEvents={wsEvents}
+            isConnected={isWsConnected}
             onDone={handleDone}
           />
         )}

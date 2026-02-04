@@ -97,12 +97,14 @@ export type WsEvent =
   | { event: 'stage_end'; stage: string; success: boolean; error?: string; metadata?: Record<string, unknown> }
   | { event: 'done'; success: boolean; context?: Record<string, unknown>; results?: unknown[] }
   | { event: 'error'; message: string }
+  | { event: 'log'; level: string; logger: string; message: string }
 
 export interface WsRunCallbacks {
   onRunId: (runId: string) => void
   onEvent: (event: WsEvent) => void
   onDone: (result: RunResultResponse) => void
   onError: (message: string) => void
+  onConnectionChange?: (connected: boolean) => void
 }
 
 /**
@@ -130,6 +132,7 @@ export function runPipelineViaWebSocket(
   }
 
   ws.onopen = () => {
+    callbacks.onConnectionChange?.(true)
     ws.send(JSON.stringify({ action: 'run', config }))
   }
 
@@ -176,6 +179,7 @@ export function runPipelineViaWebSocket(
   }
 
   ws.onclose = () => {
+    callbacks.onConnectionChange?.(false)
     if (!closed) close()
   }
 
