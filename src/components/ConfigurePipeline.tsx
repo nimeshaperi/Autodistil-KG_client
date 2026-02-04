@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { Download, Play, Database, FileText, Globe, Check, ChevronDown, Cpu } from 'lucide-react'
+import { useState, useCallback, useRef } from 'react'
+import { Download, Upload, Play, Database, FileText, Globe, Check, ChevronDown, Cpu } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -111,13 +111,39 @@ interface ConfigurePipelineProps {
   onDone?: (result: RunResultResponse) => void
 }
 
+const VALID_STAGES: StageId[] = ['graph_traverser', 'chatml_converter', 'finetuner']
+
+function parseImportedConfig(data: unknown): PipelineConfigPayload | null {
+  if (!data || typeof data !== 'object') return null
+  const o = data as Record<string, unknown>
+  const run_stages = (Array.isArray(o.run_stages)
+    ? (o.run_stages as string[]).filter((id) => VALID_STAGES.includes(id as StageId))
+    : []) as StageId[]
+  if (run_stages.length === 0) return null
+  return {
+    output_dir: typeof o.output_dir === 'string' ? o.output_dir : undefined,
+    run_stages,
+    graph_traverser: o.graph_traverser && typeof o.graph_traverser === 'object'
+      ? (o.graph_traverser as GraphTraverserConfig)
+      : undefined,
+    chatml_converter: o.chatml_converter && typeof o.chatml_converter === 'object'
+      ? (o.chatml_converter as ChatMLConverterConfig)
+      : undefined,
+    finetuner: o.finetuner && typeof o.finetuner === 'object'
+      ? (o.finetuner as FineTunerConfig)
+      : undefined,
+  }
+}
+
 export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, onDone }: ConfigurePipelineProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedStages, setSelectedStages] = useState<StageId[]>(['graph_traverser', 'chatml_converter'])
   const [graphTraverser, setGraphTraverser] = useState<GraphTraverserConfig>(defaultGraphTraverser)
   const [chatml, setChatml] = useState<ChatMLConverterConfig>(defaultChatML)
   const [finetuner, setFinetuner] = useState<FineTunerConfig>(defaultFineTuner)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
 
   const toggleStage = (id: StageId) => {
     if (id === 'evaluator') return
@@ -196,6 +222,7 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
   }
 
   const handleExport = () => {
+    setImportError(null)
     const config = buildConfig()
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
     const a = document.createElement('a')
@@ -204,6 +231,67 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
     a.click()
     URL.revokeObjectURL(a.href)
     onExportConfig?.(config)
+  }
+
+  const handleImportClick = () => {
+    setImportError(null)
+    fileInputRef.current?.click()
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const text = reader.result as string
+        const data = JSON.parse(text) as unknown
+        const config = parseImportedConfig(data)
+        if (!config) {
+          setImportError('Invalid config: need run_stages array with at least one of graph_traverser, chatml_converter, finetuner')
+          return
+        }
+        setSelectedStages(config.run_stages)
+        if (config.graph_traverser) {
+          const gt = config.graph_traverser
+          const def = defaultGraphTraverser
+          setGraphTraverser({
+            ...def,
+            ...gt,
+            traversal: { ...defaultTraversal, ...gt.traversal },
+            dataset: { ...defaultDataset, ...gt.dataset },
+            neo4j: {
+              uri: gt.neo4j?.uri ?? def.neo4j!.uri,
+              database: gt.neo4j?.database ?? def.neo4j!.database,
+              username: gt.neo4j?.username ?? def.neo4j!.username,
+              password: gt.neo4j?.password ?? def.neo4j!.password,
+            },
+            redis: { ...defaultRedis, ...gt.redis },
+            llm: { ...defaultLLM, ...gt.llm },
+          })
+        }
+        if (config.chatml_converter) {
+          setChatml({ ...defaultChatML, ...config.chatml_converter })
+        }
+        if (config.finetuner) {
+          const allowed = GEMMA_3_MODELS.some((m) => m.value === config.finetuner!.model_name)
+            ? config.finetuner.model_name
+            : GEMMA_3_MODELS[0].value
+          setFinetuner({
+            ...defaultFineTuner,
+            ...config.finetuner,
+            model_name: allowed,
+            model_type: 'gemma3',
+          })
+        }
+        setError(null)
+        setImportError(null)
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : 'Failed to parse config JSON')
+      }
+    }
+    reader.readAsText(file, 'utf-8')
   }
 
   const selectedOrder = [...selectedStages].sort(
@@ -287,7 +375,19 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
               </span>
             ))}
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            aria-hidden
+            onChange={handleFileChange}
+          />
           <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={handleImportClick}>
+              <Upload className="h-4 w-4" />
+              Import Config
+            </Button>
             <Button type="button" variant="outline" onClick={handleExport}>
               <Download className="h-4 w-4" />
               Export Config
@@ -297,6 +397,11 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
               Run Pipeline
             </Button>
           </div>
+          {importError && (
+            <p className="text-sm text-destructive" role="alert">
+              {importError}
+            </p>
+          )}
           {error && (
             <p className="text-sm text-destructive" role="alert">
               {error}
