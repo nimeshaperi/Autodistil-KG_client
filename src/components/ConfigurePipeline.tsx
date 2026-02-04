@@ -80,8 +80,8 @@ const defaultGraphTraverser: GraphTraverserConfig = {
 }
 
 const defaultChatML: ChatMLConverterConfig = {
-  input_path: 'data/chatml.jsonl',
-  output_path: 'data/prepared.jsonl',
+  input_path: 'output/dataset.jsonl',
+  output_path: 'output/prepared.jsonl',
   prepare_for_finetuning: true,
   chat_template: 'auto',
 }
@@ -590,8 +590,8 @@ function ChatMLConverterForm({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <LabelInput label="Input Path" value={value.input_path} onChange={(v) => onChange({ ...value, input_path: v })} placeholder="data/chatml.jsonl" help="Path to ChatML JSONL file" />
-          <LabelInput label="Output Path" value={value.output_path} onChange={(v) => onChange({ ...value, output_path: v })} placeholder="data/prepared.jsonl" help="Path for prepared dataset output" />
+          <LabelInput label="Input Path" value={value.input_path} onChange={(v) => onChange({ ...value, input_path: v })} placeholder="output/dataset.jsonl" help="Path to ChatML JSONL file (e.g. Graph Traverser output)" />
+          <LabelInput label="Output Path" value={value.output_path} onChange={(v) => onChange({ ...value, output_path: v })} placeholder="output/prepared.jsonl" help="Path for prepared dataset (e.g. FineTuner input)" />
         </div>
         <div className="flex items-center gap-2">
           <Switch
