@@ -108,6 +108,7 @@ interface ConfigurePipelineProps {
   onRun: (runId: string, config: PipelineConfigPayload) => void
   onExportConfig?: (config: PipelineConfigPayload) => void
   setWsEvents?: React.Dispatch<React.SetStateAction<WsEvent[]>>
+  setIsConnected?: React.Dispatch<React.SetStateAction<boolean | undefined>>
   onDone?: (result: RunResultResponse) => void
 }
 
@@ -135,7 +136,7 @@ function parseImportedConfig(data: unknown): PipelineConfigPayload | null {
   }
 }
 
-export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, onDone }: ConfigurePipelineProps) {
+export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, setIsConnected, onDone }: ConfigurePipelineProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedStages, setSelectedStages] = useState<StageId[]>(['graph_traverser', 'chatml_converter'])
   const [graphTraverser, setGraphTraverser] = useState<GraphTraverserConfig>(defaultGraphTraverser)
@@ -193,17 +194,21 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
     const config = buildConfig()
     if (setWsEvents && onDone) {
       setWsEvents([])
+      setIsConnected?.(undefined) // Reset connection status
       runPipelineViaWebSocket(config as unknown as Record<string, unknown>, {
         onRunId: (id) => onRun(id, config),
         onEvent: (e) => setWsEvents((prev) => [...prev, e]),
         onDone: (r) => {
+          setIsConnected?.(false) // Connection closed after done
           onDone(r)
           setRunning(false)
         },
         onError: (msg) => {
+          setIsConnected?.(false)
           setError(msg)
           setRunning(false)
         },
+        onConnectionChange: (connected) => setIsConnected?.(connected),
       })
       return
     }
@@ -317,7 +322,7 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
                   disabled={disabled}
                   onClick={() => !disabled && toggleStage(id)}
                   className={cn(
-                    'h-auto min-w-0 overflow-hidden flex flex-col items-stretch p-4 text-left',
+                    'h-auto min-w-0 flex flex-col items-stretch p-4 text-left whitespace-normal',
                     active && 'border-primary bg-primary/10',
                     disabled && 'opacity-70 cursor-not-allowed'
                   )}
@@ -335,7 +340,7 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
                   </div>
                   <div className="min-w-0 mt-2 flex flex-col gap-0.5">
                     <span className="font-semibold break-words">{STAGE_LABELS[id]}</span>
-                    <span className="text-sm text-muted-foreground line-clamp-2 break-words">
+                    <span className="text-xs text-muted-foreground break-words">
                       {STAGE_DESCRIPTIONS[id]}
                     </span>
                     {id === 'evaluator' && (

@@ -21,5 +21,6 @@ export default defineConfig({
         ws: true,
       },
     },
+    allowedHosts: ['bumblebee'],
   },
 })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, Clock, AlertTriangle } from 'lucide-react'
+import { FileText, Clock, AlertTriangle, Wifi, WifiOff } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
@@ -21,7 +21,7 @@ function stagesFromWsEvents(events: WsEvent[], runOrder: string[]): { stages: St
   for (const ev of events) {
     const ts = new Date().toISOString().slice(11, 19)
     if (ev.event === 'run_start') {
-      logs.push(`${ts} Run started (live updates)`)
+      logs.push(`[${ts}] [INFO] Run started (live updates via WebSocket)`)
       continue
     }
     if (ev.event === 'pipeline_start') {
@@ -31,7 +31,7 @@ function stagesFromWsEvents(events: WsEvent[], runOrder: string[]): { stages: St
         status: 'pending' as const,
         progress: 0,
       }))
-      logs.push(`${ts} Pipeline started: ${orderedStages.join(' → ')}`)
+      logs.push(`[${ts}] [INFO] Pipeline started: ${orderedStages.join(' → ')}`)
       continue
     }
     if (ev.event === 'stage_start') {
@@ -44,7 +44,7 @@ function stagesFromWsEvents(events: WsEvent[], runOrder: string[]): { stages: St
           progress: 0,
         }
       }
-      logs.push(`${ts} Stage started: ${ev.stage}`)
+      logs.push(`[${ts}] [INFO] Stage started: ${ev.stage}`)
       continue
     }
     if (ev.event === 'stage_end') {
@@ -59,15 +59,23 @@ function stagesFromWsEvents(events: WsEvent[], runOrder: string[]): { stages: St
         }
         if (ev.success) completedCount++
       }
-      logs.push(`${ts} Stage ${ev.success ? 'completed' : 'failed'}: ${ev.stage}${ev.error ? ` — ${ev.error}` : ''}`)
+      const level = ev.success ? 'INFO' : 'ERROR'
+      logs.push(`[${ts}] [${level}] Stage ${ev.success ? 'completed' : 'failed'}: ${ev.stage}${ev.error ? ` — ${ev.error}` : ''}`)
+      continue
+    }
+    if (ev.event === 'log') {
+      // Handle streaming log events from the pipeline
+      const logEvent = ev as { event: 'log'; level: string; logger: string; message: string }
+      logs.push(`[${ts}] [${logEvent.level}] ${logEvent.message}`)
       continue
     }
     if (ev.event === 'done') {
-      logs.push(`${ts} Pipeline ${ev.success ? 'completed.' : 'failed.'}`)
+      const level = ev.success ? 'INFO' : 'ERROR'
+      logs.push(`[${ts}] [${level}] Pipeline ${ev.success ? 'completed successfully.' : 'failed.'}`)
       continue
     }
     if (ev.event === 'error') {
-      logs.push(`${ts} Error: ${ev.message}`)
+      logs.push(`[${ts}] [ERROR] ${ev.message}`)
     }
   }
 
@@ -105,10 +113,11 @@ interface MonitorProgressProps {
   runId: string | null
   config: PipelineConfigPayload | null
   wsEvents?: WsEvent[]
+  isConnected?: boolean
   onDone: (result: unknown) => void
 }
 
-export default function MonitorProgress({ runId, config, wsEvents = [], onDone }: MonitorProgressProps) {
+export default function MonitorProgress({ runId, config, wsEvents = [], isConnected, onDone }: MonitorProgressProps) {
   const [stages, setStages] = useState<StageDetail[]>([])
   const [overallProgress, setOverallProgress] = useState(0)
   const [logs, setLogs] = useState<string[]>([])
@@ -222,7 +231,15 @@ export default function MonitorProgress({ runId, config, wsEvents = [], onDone }
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Overall Progress</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Overall Progress</CardTitle>
+            {isConnected !== undefined && (
+              <div className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded-full ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
+                {isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+                {isConnected ? 'Live' : 'Disconnected'}
+              </div>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {completedCount} of {displayStages.length} stages completed
           </p>
