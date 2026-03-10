@@ -36,13 +36,16 @@ export async function getRunStatus(runId: string): Promise<RunResultResponse> {
   return res.json()
 }
 
-/** URL for downloading a run artifact (chatml or prepared JSONL). */
-export function getRunArtifactUrl(runId: string, artifactKey: 'chatml' | 'prepared'): string {
+/** URL for downloading a run artifact (chatml, prepared dataset, or eval report). */
+export function getRunArtifactUrl(runId: string, artifactKey: 'chatml' | 'prepared' | 'eval_report'): string {
   return `${apiBase}/pipelines/runs/${runId}/artifacts/${artifactKey}`
 }
 
 /** Fetch run artifact and trigger browser download. */
-export async function downloadRunArtifact(runId: string, artifactKey: 'chatml' | 'prepared'): Promise<void> {
+export async function downloadRunArtifact(
+  runId: string,
+  artifactKey: 'chatml' | 'prepared' | 'eval_report'
+): Promise<void> {
   const url = getRunArtifactUrl(runId, artifactKey)
   const res = await fetch(url)
   if (!res.ok) {
@@ -53,7 +56,13 @@ export async function downloadRunArtifact(runId: string, artifactKey: 'chatml' |
   const blob = await res.blob()
   const disposition = res.headers.get('Content-Disposition')
   const match = disposition?.match(/filename="?([^";]+)"?/)
-  const filename = match ? match[1].trim() : (artifactKey === 'chatml' ? 'dataset.jsonl' : 'prepared.jsonl')
+  const filename = match
+    ? match[1].trim()
+    : artifactKey === 'chatml'
+      ? 'dataset.jsonl'
+      : artifactKey === 'prepared'
+        ? 'prepared.jsonl'
+        : 'eval_report.json'
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
   a.download = filename

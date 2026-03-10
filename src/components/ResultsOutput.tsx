@@ -21,8 +21,12 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
   const error = runResult?.error
   const chatmlPath = context?.chatml_dataset_path as string | undefined
   const preparedPath = context?.prepared_dataset_path as string | undefined
+  const evalReportPath = context?.eval_report_path as string | undefined
+  const lastResult = results.length > 0 ? results[results.length - 1] : null
+  // Fix: assign evalMetrics a type that satisfies ReactNode for use in JSX
+  const evalMetrics: object | undefined = (lastResult?.metadata as { metrics?: object } | undefined)?.metrics
 
-  const handleDownload = async (artifactKey: 'chatml' | 'prepared') => {
+  const handleDownload = async (artifactKey: 'chatml' | 'prepared' | 'eval_report') => {
     if (!runId) return
     setDownloadError(null)
     try {
@@ -76,6 +80,14 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
                   </ul>
                 </div>
               )}
+              {evalMetrics && (
+                <div className="mb-4">
+                  <h3 className="text-sm font-medium mb-2">Evaluation metrics (EvalG)</h3>
+                  <pre className="p-3 rounded-md border bg-muted/50 text-xs overflow-x-auto">
+                    {JSON.stringify(evalMetrics, null, 2)}
+                  </pre>
+                </div>
+              )}
               {Object.keys(context).length > 0 && (
                 <details className="mt-2" open>
                   <summary className="text-sm font-medium cursor-pointer">
@@ -94,6 +106,23 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
                         >
                           <Download className="h-3.5 w-3.5" />
                           Download JSONL
+                        </Button>
+                      </div>
+                    )}
+                    {evalReportPath && runId && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs text-muted-foreground font-mono break-all flex-1 min-w-0">
+                          {evalReportPath}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleDownload('eval_report')}
+                          className="shrink-0"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Download eval report
                         </Button>
                       </div>
                     )}
