@@ -4,6 +4,11 @@ export interface TraversalConfig {
   strategy: string
   max_nodes: number
   max_depth: number
+  reasoning_depth?: number
+  max_paths_per_node?: number
+  relationship_types?: string
+  node_labels?: string
+  seed_node_ids?: string
 }
 
 export interface DatasetConfig {

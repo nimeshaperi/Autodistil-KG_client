@@ -39,15 +39,19 @@ const STAGE_DESCRIPTIONS: Record<StageId, string> = {
 }
 
 const STRATEGY_OPTIONS = [
-  { value: 'bfs', label: 'Breadth-First Search' },
-  { value: 'dfs', label: 'Depth-First Search' },
-  { value: 'random', label: 'Random' },
+  { value: 'bfs', label: 'Breadth-First Search', description: 'Explore graph layer by layer from seed nodes.' },
+  { value: 'dfs', label: 'Depth-First Search', description: 'Explore graph depth-first along each branch.' },
+  { value: 'random', label: 'Random Walk', description: 'Randomly select neighbours at each step.' },
+  { value: 'semantic', label: 'Semantic (LLM-guided)', description: 'LLM selects the most relevant neighbour based on context.' },
+  { value: 'reasoning', label: 'Reasoning (multi-hop)', description: 'Deep multi-hop reasoning with subgraph exploration.' },
 ]
 
 const defaultTraversal = {
   strategy: 'bfs',
   max_nodes: 500,
   max_depth: 5,
+  reasoning_depth: 2,
+  max_paths_per_node: 15,
 }
 
 const defaultDataset = {
@@ -181,10 +185,20 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
       run_stages,
     }
     if (selectedStages.includes('graph_traverser')) {
+      const csvToArray = (v?: string) => v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined
+      const t = graphTraverser.traversal
       payload.graph_traverser = {
         ...graphTraverser,
         output_path: graphTraverser.output_path || 'output/dataset.jsonl',
-        traversal: graphTraverser.traversal,
+        traversal: {
+          strategy: t.strategy,
+          max_nodes: t.max_nodes,
+          max_depth: t.max_depth,
+          ...(t.strategy === 'reasoning' ? { reasoning_depth: t.reasoning_depth ?? 2, max_paths_per_node: t.max_paths_per_node ?? 15 } : {}),
+          relationship_types: csvToArray(t.relationship_types) as unknown as string,
+          node_labels: csvToArray(t.node_labels) as unknown as string,
+          seed_node_ids: csvToArray(t.seed_node_ids) as unknown as string,
+        },
         dataset: {
           ...graphTraverser.dataset,
           seed_prompts: graphTraverser.dataset.seed_prompts.filter(Boolean),
@@ -559,22 +573,79 @@ function GraphTraverserForm({
           </div>
         </ConfigCollapsible>
         <ConfigCollapsible title="Traversal Settings" defaultOpen>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-2">
-              <Label>Strategy</Label>
-              <Select value={value.traversal.strategy} onValueChange={(v) => updateTraversal({ strategy: v })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STRATEGY_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-2">
+                <Label>Strategy</Label>
+                <Select value={value.traversal.strategy} onValueChange={(v) => updateTraversal({ strategy: v })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STRATEGY_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {STRATEGY_OPTIONS.find((o) => o.value === value.traversal.strategy)?.description}
+                </p>
+              </div>
+              <LabelInput label="Max Nodes" type="number" value={String(value.traversal.max_nodes)} onChange={(v) => updateTraversal({ max_nodes: parseInt(v, 10) || 0 })} />
+              <LabelInput label="Max Depth" type="number" value={String(value.traversal.max_depth)} onChange={(v) => updateTraversal({ max_depth: parseInt(v, 10) || 0 })} />
             </div>
-            <LabelInput label="Max Nodes" type="number" value={String(value.traversal.max_nodes)} onChange={(v) => updateTraversal({ max_nodes: parseInt(v, 10) || 0 })} />
-            <LabelInput label="Max Depth" type="number" value={String(value.traversal.max_depth)} onChange={(v) => updateTraversal({ max_depth: parseInt(v, 10) || 0 })} />
+            {value.traversal.strategy === 'reasoning' && (
+              <div className="grid grid-cols-2 gap-3">
+                <LabelInput
+                  label="Reasoning Depth"
+                  type="number"
+                  value={String(value.traversal.reasoning_depth ?? 2)}
+                  onChange={(v) => updateTraversal({ reasoning_depth: parseInt(v, 10) || 2 })}
+                  help="Subgraph depth to explore around each node"
+                />
+                <LabelInput
+                  label="Max Paths per Node"
+                  type="number"
+                  value={String(value.traversal.max_paths_per_node ?? 15)}
+                  onChange={(v) => updateTraversal({ max_paths_per_node: parseInt(v, 10) || 15 })}
+                  help="Maximum paths to reason over per node"
+                />
+              </div>
+            )}
+            {(value.traversal.strategy === 'semantic' || value.traversal.strategy === 'reasoning') && (
+              <div className="rounded-lg border bg-muted/50 p-3">
+                <p className="text-xs text-muted-foreground">
+                  {value.traversal.strategy === 'semantic'
+                    ? 'Semantic traversal uses the configured LLM to decide which neighbouring node is most relevant at each step. Ensure an LLM provider is configured above.'
+                    : 'Reasoning traversal performs multi-hop subgraph exploration and path analysis using the LLM to generate rich, contextual conversations. Ensure an LLM provider is configured above.'}
+                </p>
+              </div>
+            )}
+          </div>
+        </ConfigCollapsible>
+        <ConfigCollapsible title="Graph Filters (optional)" defaultOpen={false}>
+          <div className="space-y-3">
+            <LabelInput
+              label="Relationship Types"
+              value={value.traversal.relationship_types ?? ''}
+              onChange={(v) => updateTraversal({ relationship_types: v || undefined })}
+              placeholder="HAS_PART, RELATED_TO"
+              help="Comma-separated list of relationship types to follow (empty = all)"
+            />
+            <LabelInput
+              label="Node Labels"
+              value={value.traversal.node_labels ?? ''}
+              onChange={(v) => updateTraversal({ node_labels: v || undefined })}
+              placeholder="Person, Organization"
+              help="Comma-separated list of node labels to include (empty = all)"
+            />
+            <LabelInput
+              label="Seed Node IDs"
+              value={value.traversal.seed_node_ids ?? ''}
+              onChange={(v) => updateTraversal({ seed_node_ids: v || undefined })}
+              placeholder="node_123, node_456"
+              help="Comma-separated starting node IDs (empty = auto-select)"
+            />
           </div>
         </ConfigCollapsible>
         <ConfigCollapsible title="Dataset Generation" defaultOpen>
