@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { Download, Upload, Play, Database, FileText, Globe, Check, ChevronDown, Cpu } from 'lucide-react'
+import { Download, Upload, Play, Database, FileText, Globe, Check, ChevronDown, Cpu, BarChart3 } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -24,7 +24,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import type { PipelineConfigPayload, StageId, GraphTraverserConfig, ChatMLConverterConfig, FineTunerConfig, RedisConfig, LLMConfig } from '@/types/config'
+import type { PipelineConfigPayload, StageId, GraphTraverserConfig, ChatMLConverterConfig, FineTunerConfig, EvaluatorConfig, RedisConfig, LLMConfig } from '@/types/config'
 import { STAGE_ORDER, STAGE_LABELS } from '@/types/config'
 import { runPipeline, runPipelineViaWebSocket } from '@/api/client'
 import type { RunResultResponse } from '@/api/client'
@@ -35,7 +35,7 @@ const STAGE_DESCRIPTIONS: Record<StageId, string> = {
   graph_traverser: 'Traverse Neo4j graph and generate conversations',
   chatml_converter: 'Convert and prepare ChatML datasets',
   finetuner: 'Fine-tune models with Unsloth',
-  evaluator: 'Evaluate model performance',
+  evaluator: 'Compare finetuned vs base models with ROUGE & LLM judge',
 }
 
 const STRATEGY_OPTIONS = [
@@ -104,6 +104,22 @@ const defaultFineTuner: FineTunerConfig = {
   learning_rate: 2e-4,
 }
 
+const LLM_PROVIDERS = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'claude', label: 'Claude' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'ollama', label: 'Ollama' },
+  { value: 'vllm', label: 'vLLM' },
+] as const
+
+const defaultEvaluator: EvaluatorConfig = {
+  eval_dataset_path: 'output/prepared.jsonl',
+  output_report_path: 'output/eval_report.json',
+  metrics: ['rouge'],
+  evalg_mode: 'internal',
+  graph_rag_enabled: false,
+}
+
 interface ConfigurePipelineProps {
   onRun: (runId: string, config: PipelineConfigPayload) => void
   onExportConfig?: (config: PipelineConfigPayload) => void
@@ -112,7 +128,7 @@ interface ConfigurePipelineProps {
   onDone?: (result: RunResultResponse) => void
 }
 
-const VALID_STAGES: StageId[] = ['graph_traverser', 'chatml_converter', 'finetuner']
+const VALID_STAGES: StageId[] = ['graph_traverser', 'chatml_converter', 'finetuner', 'evaluator']
 
 function parseImportedConfig(data: unknown): PipelineConfigPayload | null {
   if (!data || typeof data !== 'object') return null
@@ -133,6 +149,9 @@ function parseImportedConfig(data: unknown): PipelineConfigPayload | null {
     finetuner: o.finetuner && typeof o.finetuner === 'object'
       ? (o.finetuner as FineTunerConfig)
       : undefined,
+    evaluator: o.evaluator && typeof o.evaluator === 'object'
+      ? (o.evaluator as EvaluatorConfig)
+      : undefined,
   }
 }
 
@@ -142,12 +161,12 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
   const [graphTraverser, setGraphTraverser] = useState<GraphTraverserConfig>(defaultGraphTraverser)
   const [chatml, setChatml] = useState<ChatMLConverterConfig>(defaultChatML)
   const [finetuner, setFinetuner] = useState<FineTunerConfig>(defaultFineTuner)
+  const [evaluator, setEvaluator] = useState<EvaluatorConfig>(defaultEvaluator)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
 
   const toggleStage = (id: StageId) => {
-    if (id === 'evaluator') return
     setSelectedStages((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
     )
@@ -185,8 +204,19 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
         model_type: 'gemma3',
       }
     }
+    if (selectedStages.includes('evaluator')) {
+      const baseProvider = evaluator.base_model_provider === 'none' ? undefined : evaluator.base_model_provider
+      payload.evaluator = {
+        ...evaluator,
+        base_model_provider: baseProvider,
+        base_model_name: baseProvider ? evaluator.base_model_name : undefined,
+        base_model_api_key: baseProvider ? evaluator.base_model_api_key : undefined,
+        base_model_base_url: baseProvider ? evaluator.base_model_base_url : undefined,
+        graph_rag_config: evaluator.graph_rag_enabled ? evaluator.graph_rag_config : undefined,
+      }
+    }
     return payload
-  }, [selectedStages, graphTraverser, chatml, finetuner])
+  }, [selectedStages, graphTraverser, chatml, finetuner, evaluator])
 
   const handleRun = () => {
     setError(null)
@@ -290,6 +320,9 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
             model_type: 'gemma3',
           })
         }
+        if (config.evaluator) {
+          setEvaluator({ ...defaultEvaluator, ...config.evaluator })
+        }
         setError(null)
         setImportError(null)
       } catch (err) {
@@ -313,18 +346,15 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {STAGE_ORDER.map((id, idx) => {
               const active = selectedStages.includes(id)
-              const disabled = id === 'evaluator'
               return (
                 <Button
                   key={id}
                   type="button"
                   variant="outline"
-                  disabled={disabled}
-                  onClick={() => !disabled && toggleStage(id)}
+                  onClick={() => toggleStage(id)}
                   className={cn(
                     'h-auto min-w-0 flex flex-col items-stretch p-4 text-left whitespace-normal',
                     active && 'border-primary bg-primary/10',
-                    disabled && 'opacity-70 cursor-not-allowed'
                   )}
                 >
                   <div className="flex items-center justify-between w-full shrink-0">
@@ -336,16 +366,13 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
                     >
                       {idx + 1}
                     </span>
-                    {active && !disabled && <Check className="h-5 w-5 shrink-0 text-primary" />}
+                    {active && <Check className="h-5 w-5 shrink-0 text-primary" />}
                   </div>
                   <div className="min-w-0 mt-2 flex flex-col gap-0.5">
                     <span className="font-semibold break-words">{STAGE_LABELS[id]}</span>
                     <span className="text-xs text-muted-foreground break-words">
                       {STAGE_DESCRIPTIONS[id]}
                     </span>
-                    {id === 'evaluator' && (
-                      <span className="text-xs text-muted-foreground mt-1">Coming Soon</span>
-                    )}
                   </div>
                 </Button>
               )
@@ -364,6 +391,10 @@ export default function ConfigurePipeline({ onRun, onExportConfig, setWsEvents, 
 
       {selectedStages.includes('finetuner') && (
         <FineTunerForm value={finetuner} onChange={setFinetuner} />
+      )}
+
+      {selectedStages.includes('evaluator') && (
+        <EvaluatorForm value={evaluator} onChange={setEvaluator} />
       )}
 
       <Card>
@@ -712,6 +743,182 @@ function FineTunerForm({
             placeholder="2e-4"
           />
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function EvaluatorForm({
+  value,
+  onChange,
+}: {
+  value: EvaluatorConfig
+  onChange: (v: EvaluatorConfig) => void
+}) {
+  const update = (part: Partial<EvaluatorConfig>) => onChange({ ...value, ...part })
+  const toggleMetric = (metric: string) => {
+    const current = value.metrics || []
+    if (current.includes(metric)) {
+      update({ metrics: current.filter((m) => m !== metric) })
+    } else {
+      update({ metrics: [...current, metric] })
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-5 w-5 text-violet-600" />
+          <div>
+            <CardTitle>Evaluator Configuration</CardTitle>
+            <CardDescription>
+              Compare finetuned model against base models and Graph RAG using ROUGE and LLM judge metrics.
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <ConfigCollapsible title="Evaluation Settings" defaultOpen>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Evaluation Mode</Label>
+              <Select value={value.evalg_mode} onValueChange={(v) => update({ evalg_mode: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="internal">Internal (in-process)</SelectItem>
+                  <SelectItem value="cli">CLI (external command)</SelectItem>
+                  <SelectItem value="noop">No-op (stub report)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <LabelInput
+                label="Eval Dataset Path"
+                value={value.eval_dataset_path ?? ''}
+                onChange={(v) => update({ eval_dataset_path: v })}
+                placeholder="output/prepared.jsonl"
+                help="JSONL with messages (question/answer pairs)"
+              />
+              <LabelInput
+                label="Output Report Path"
+                value={value.output_report_path ?? ''}
+                onChange={(v) => update({ output_report_path: v })}
+                placeholder="output/eval_report.json"
+              />
+            </div>
+            <LabelInput
+              label="Finetuned Model Path (optional)"
+              value={value.model_path ?? ''}
+              onChange={(v) => update({ model_path: v })}
+              placeholder="output/finetuned"
+              help="Leave empty to use the finetuner output from context"
+            />
+            <LabelInput
+              label="Max Eval Samples (optional)"
+              type="number"
+              value={value.max_eval_samples != null ? String(value.max_eval_samples) : ''}
+              onChange={(v) => update({ max_eval_samples: v ? parseInt(v, 10) || undefined : undefined })}
+              placeholder="All samples"
+              help="Limit the number of samples to evaluate"
+            />
+            <div className="space-y-2">
+              <Label>Metrics</Label>
+              <div className="flex gap-3">
+                {['rouge', 'llm_judge'].map((metric) => (
+                  <div key={metric} className="flex items-center gap-2">
+                    <Switch
+                      id={`metric_${metric}`}
+                      checked={(value.metrics || []).includes(metric)}
+                      onCheckedChange={() => toggleMetric(metric)}
+                    />
+                    <Label htmlFor={`metric_${metric}`} className="font-normal cursor-pointer">
+                      {metric === 'rouge' ? 'ROUGE (1/2/L)' : 'LLM Judge'}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </ConfigCollapsible>
+
+        {(value.metrics || []).includes('llm_judge') && (
+          <ConfigCollapsible title="LLM Judge" icon={<Globe className="h-5 w-5 text-muted-foreground" />} defaultOpen>
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label>Judge Provider</Label>
+                <Select value={value.judge_provider ?? 'openai'} onValueChange={(v) => update({ judge_provider: v })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LLM_PROVIDERS.map((p) => (
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <LabelInput label="Judge Model" value={value.judge_model ?? ''} onChange={(v) => update({ judge_model: v })} placeholder="gpt-4" />
+              <LabelInput label="Judge API Key" type="password" value={value.judge_api_key ?? ''} onChange={(v) => update({ judge_api_key: v })} placeholder="sk-..." />
+            </div>
+          </ConfigCollapsible>
+        )}
+
+        <ConfigCollapsible title="Base Model Comparison (optional)" icon={<Cpu className="h-5 w-5 text-muted-foreground" />} defaultOpen={false}>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Add a base (non-finetuned) model to compare against. Leave provider empty to skip.
+            </p>
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <Select value={value.base_model_provider ?? ''} onValueChange={(v) => update({ base_model_provider: v || undefined })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="None (skip base model)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None (skip)</SelectItem>
+                  {LLM_PROVIDERS.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {value.base_model_provider && value.base_model_provider !== 'none' && (
+              <>
+                <LabelInput label="Model Name" value={value.base_model_name ?? ''} onChange={(v) => update({ base_model_name: v })} placeholder="gemma3:4b" />
+                <LabelInput label="API Key" type="password" value={value.base_model_api_key ?? ''} onChange={(v) => update({ base_model_api_key: v })} placeholder="sk-..." />
+                <LabelInput label="Base URL (optional)" value={value.base_model_base_url ?? ''} onChange={(v) => update({ base_model_base_url: v })} placeholder="http://localhost:11434" />
+              </>
+            )}
+          </div>
+        </ConfigCollapsible>
+
+        <ConfigCollapsible title="Graph RAG Comparison (optional)" icon={<Database className="h-5 w-5 text-muted-foreground" />} defaultOpen={false}>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="graph_rag_enabled"
+                checked={value.graph_rag_enabled}
+                onCheckedChange={(checked) => update({ graph_rag_enabled: checked })}
+              />
+              <Label htmlFor="graph_rag_enabled" className="font-normal cursor-pointer">
+                Include Graph RAG as a comparison system
+              </Label>
+            </div>
+            {value.graph_rag_enabled && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <LabelInput label="Neo4j URI" value={value.graph_rag_config?.neo4j_uri ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_uri: v } })} placeholder="bolt://localhost:7687" />
+                <LabelInput label="Neo4j User" value={value.graph_rag_config?.neo4j_user ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_user: v } })} placeholder="neo4j" />
+                <LabelInput label="Neo4j Password" type="password" value={value.graph_rag_config?.neo4j_password ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_password: v } })} placeholder="password" />
+                <LabelInput label="Neo4j Database" value={value.graph_rag_config?.neo4j_database ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_database: v } })} placeholder="neo4j" />
+                <LabelInput label="LLM API Key" type="password" value={value.graph_rag_config?.llm_api_key ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, llm_api_key: v } })} placeholder="sk-..." />
+                <LabelInput label="LLM Model" value={value.graph_rag_config?.llm_model ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, llm_model: v } })} placeholder="gpt-4" />
+              </div>
+            )}
+          </div>
+        </ConfigCollapsible>
       </CardContent>
     </Card>
   )

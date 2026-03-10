@@ -67,13 +67,41 @@ export interface FineTunerConfig {
   learning_rate?: number
 }
 
+export interface EvaluatorConfig {
+  model_path?: string
+  eval_dataset_path?: string
+  output_report_path?: string
+  metrics: string[]
+  evalg_mode: string
+  base_model_provider?: string
+  base_model_name?: string
+  base_model_api_key?: string
+  base_model_base_url?: string
+  graph_rag_enabled: boolean
+  graph_rag_config?: {
+    neo4j_uri?: string
+    neo4j_user?: string
+    neo4j_password?: string
+    neo4j_database?: string
+    llm_api_key?: string
+    llm_model?: string
+    embedding_api_key?: string
+    embedding_model?: string
+    retrievers?: string[]
+  }
+  judge_provider?: string
+  judge_model?: string
+  judge_api_key?: string
+  max_eval_samples?: number
+}
+
 export interface PipelineConfigPayload {
   output_dir?: string
   run_stages: StageId[]
   graph_traverser?: GraphTraverserConfig
   chatml_converter?: ChatMLConverterConfig
   finetuner?: FineTunerConfig
-  evaluator?: Record<string, unknown>
+  evaluator?: EvaluatorConfig
 }
 
 export const STAGE_ORDER: StageId[] = ['graph_traverser', 'chatml_converter', 'finetuner', 'evaluator']
