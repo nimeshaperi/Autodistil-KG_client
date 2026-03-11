@@ -150,6 +150,8 @@ interface MonitorProgressProps {
   wsEvents?: WsEvent[]
   isConnected?: boolean
   onDone: (result: unknown) => void
+  /** When set, only show monitoring for this specific stage */
+  stageFilter?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -173,7 +175,7 @@ function StageStatusIcon({ status }: { status: StageDetail['status'] }) {
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
-export default function MonitorProgress({ runId, config, wsEvents = [], isConnected, onDone }: MonitorProgressProps) {
+export default function MonitorProgress({ runId, config, wsEvents = [], isConnected, onDone, stageFilter }: MonitorProgressProps) {
   const [polledEvents, setPolledEvents] = useState<WsEvent[]>([])
   const [polledStages, setPolledStages] = useState<string[]>([])
   const [runStatus, setRunStatus] = useState<string | null>(null)
@@ -320,6 +322,80 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
   const displayLogs = eventDerived ? eventDerived.logs : statusDerivedLogs
   const completedCount = displayStages.filter((s) => s.status === 'completed').length
 
+  // When filtering for a specific stage, show only relevant content
+  const filteredStage = stageFilter
+    ? displayStages.find((s) => s.id === stageFilter)
+    : null
+
+  if (stageFilter) {
+    return (
+      <div className="space-y-4">
+        {/* Stage-specific progress */}
+        {filteredStage && (
+          <div
+            className={`flex items-start gap-4 p-4 rounded-lg border transition-all duration-300 ${
+              filteredStage.status === 'running'
+                ? 'border-blue-300 bg-blue-50/50 dark:bg-blue-950/20 shadow-sm'
+                : filteredStage.status === 'completed'
+                  ? 'border-green-200 bg-green-50/30 dark:bg-green-950/10'
+                  : filteredStage.status === 'failed'
+                    ? 'border-red-200 bg-red-50/30 dark:bg-red-950/10'
+                    : 'bg-muted/30'
+            }`}
+          >
+            <StageStatusIcon status={filteredStage.status} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium">{filteredStage.name}</h3>
+                <Badge
+                  variant={
+                    filteredStage.status === 'completed' ? 'default'
+                      : filteredStage.status === 'failed' ? 'destructive'
+                        : filteredStage.status === 'running' ? 'secondary' : 'outline'
+                  }
+                  className={`text-xs ${filteredStage.status === 'running' ? 'animate-pulse' : ''}`}
+                >
+                  {filteredStage.status}
+                </Badge>
+                {isConnected !== undefined && (
+                  <div className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full ml-auto ${isConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+                    {isConnected ? 'Live' : 'Offline'}
+                  </div>
+                )}
+              </div>
+              {filteredStage.status !== 'pending' && (
+                <div className="flex items-center gap-2 mt-2">
+                  <Progress value={filteredStage.progress} className="flex-1 h-1.5" />
+                  <span className="text-xs text-muted-foreground w-8">{filteredStage.progress}%</span>
+                </div>
+              )}
+              {filteredStage.error && (
+                <p className="text-sm text-destructive mt-2">{filteredStage.error}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Graph-traverser-specific: show graph viz and traversal activity */}
+        {stageFilter === 'graph_traverser' && (
+          <>
+            <GraphVisualization wsEvents={effectiveEvents} />
+            <TraversalActivity wsEvents={effectiveEvents} />
+          </>
+        )}
+
+        {/* Filtered logs */}
+        {displayLogs.length > 0 && (
+          <pre className="text-xs font-mono rounded-md border bg-muted/50 p-3 max-h-48 overflow-y-auto whitespace-pre-wrap">
+            {displayLogs.join('\n')}
+          </pre>
+        )}
+      </div>
+    )
+  }
+
+  // Full (unfiltered) view
   return (
     <div className="space-y-6">
       {/* -- Overall Progress -- */}

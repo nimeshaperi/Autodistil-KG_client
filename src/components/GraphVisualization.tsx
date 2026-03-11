@@ -50,6 +50,7 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
   datasetSize: number
   done: boolean
   currentNodeId: string | null
+  currentStep: string | null
 } {
   const nodeMap = new Map<string, GraphNode>()
   const linkSet = new Set<string>()
@@ -60,9 +61,13 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
   let datasetSize = 0
   let done = false
   let currentNodeId: string | null = null
+  let currentStep: string | null = null
   let lastNodeId: string | null = null
 
   for (const ev of events) {
+    // Track the latest step description
+    if (ev.step) currentStep = ev.step
+
     switch (ev.type) {
       case 'traversal_start':
         strategy = ev.strategy ?? ''
@@ -98,12 +103,52 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
         break
       }
 
+      case 'neighbors_loaded': {
+        // Non-reasoning strategies: add neighbor nodes and edges
+        const centerId = ev.node_id ?? '?'
+        for (const n of ev.neighbors ?? []) {
+          if (!nodeMap.has(n.id)) {
+            nodeMap.set(n.id, {
+              id: n.id,
+              labels: n.labels ?? [],
+              state: 'pending',
+              depth: (nodeMap.get(centerId)?.depth ?? 0) + 1,
+            })
+          }
+          const linkKey = `${centerId}→${n.id}`
+          if (!linkSet.has(linkKey)) {
+            linkSet.add(linkKey)
+            links.push({ source: centerId, target: n.id, label: n.relationship_type })
+          }
+        }
+        break
+      }
+
       case 'subgraph_loaded': {
-        // For reasoning strategy, we get subgraph info
+        // Reasoning strategy: add subgraph nodes and edges
         const id = ev.node_id
         if (id && nodeMap.has(id)) {
           const node = nodeMap.get(id)!
           node.labels = ev.labels ?? node.labels
+        }
+        // Add subgraph neighbor nodes
+        for (const n of ev.nodes ?? []) {
+          if (!nodeMap.has(n.id)) {
+            nodeMap.set(n.id, {
+              id: n.id,
+              labels: n.labels ?? [],
+              state: 'pending',
+              depth: (id ? (nodeMap.get(id)?.depth ?? 0) : 0) + 1,
+            })
+          }
+        }
+        // Add subgraph edges
+        for (const e of ev.edges ?? []) {
+          const linkKey = `${e.source}→${e.target}`
+          if (!linkSet.has(linkKey)) {
+            linkSet.add(linkKey)
+            links.push({ source: e.source, target: e.target, label: e.type })
+          }
         }
         break
       }
@@ -143,6 +188,7 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
     datasetSize,
     done,
     currentNodeId,
+    currentStep: done ? null : currentStep,
   }
 }
 
@@ -183,13 +229,10 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
     [wsEvents],
   )
 
-  const { graphData, strategy, visited, total, datasetSize, done, currentNodeId } = useMemo(
+  const { graphData, strategy, visited, total, datasetSize, done, currentNodeId, currentStep } = useMemo(
     () => deriveGraphData(traversalEvents),
     [traversalEvents],
   )
-
-  // Don't render if no traversal events
-  if (traversalEvents.length === 0) return null
 
   // Resize observer
   useEffect(() => {
@@ -317,99 +360,268 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
       ctx.closePath()
       ctx.fillStyle = 'rgba(148, 163, 184, 0.5)'
       ctx.fill()
+
+      // Relationship label on edge (show when zoomed in)
+      if (link.label && globalScale > 1.5) {
+        const midX = (src.x + tgt.x) / 2
+        const midY = ((src.y ?? 0) + (tgt.y ?? 0)) / 2
+        const fontSize = Math.max(7 / globalScale, 2.5)
+        ctx.font = `${fontSize}px sans-serif`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = 'rgba(99, 102, 241, 0.7)'
+        ctx.fillText(link.label, midX, midY - 3 / globalScale)
+      }
     },
     [],
   )
 
   const progressPct = total > 0 ? Math.round((visited / total) * 100) : 0
 
+  // Don't render if no traversal events
+  if (traversalEvents.length === 0) return null
+
+  // Format step string for display (e.g. "path_reasoning" -> "Reasoning over paths")
+  const stepLabel = currentStep
+    ? currentStep
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+    : null
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Graph Traversal Visualization</CardTitle>
-          <div className="flex items-center gap-2">
-            {strategy && (
-              <Badge variant="secondary" className="text-xs capitalize">
-                {strategy}
+    <div className="space-y-4">
+      {/* Graph visualization card */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Graph Traversal Visualization</CardTitle>
+            <div className="flex items-center gap-2">
+              {strategy && (
+                <Badge variant="secondary" className="text-xs capitalize">
+                  {strategy}
+                </Badge>
+              )}
+              <Badge variant="outline" className="text-xs tabular-nums">
+                {visited}/{total} nodes
               </Badge>
-            )}
-            <Badge variant="outline" className="text-xs tabular-nums">
-              {visited}/{total} nodes
-            </Badge>
-            {done && (
-              <Badge className="bg-green-600 text-white text-xs">Complete</Badge>
-            )}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {/* Legend */}
-        <div className="flex items-center gap-4 mb-3 text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
-            Processing
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" />
-            Completed
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-400" />
-            Pending
-          </div>
-          <div className="ml-auto tabular-nums">
-            {datasetSize} conversations
-          </div>
-        </div>
-
-        {/* Graph canvas */}
-        <div
-          ref={containerRef}
-          className="rounded-lg border bg-slate-950/5 dark:bg-slate-50/5 overflow-hidden"
-          style={{ height: 400 }}
-        >
-          <ForceGraph2D
-            ref={graphRef as React.MutableRefObject<never>}
-            graphData={graphData}
-            width={dimensions.width}
-            height={dimensions.height}
-            nodeCanvasObject={nodeCanvasObject as never}
-            linkCanvasObject={linkCanvasObject as never}
-            nodeId="id"
-            cooldownTicks={graphData.nodes.length > 50 ? 80 : 150}
-            d3AlphaDecay={0.02}
-            d3VelocityDecay={0.3}
-            enableZoomInteraction={true}
-            enablePanInteraction={true}
-            backgroundColor="transparent"
-            nodeLabel={(node: GraphNode) => {
-              const parts = [`Node: ${node.id}`]
-              if (node.labels.length) parts.push(`Labels: ${node.labels.join(', ')}`)
-              parts.push(`State: ${node.state}`)
-              parts.push(`Depth: ${node.depth}`)
-              if (node.conversations) parts.push(`Conversations: ${node.conversations}`)
-              if (node.pathsAnalyzed) parts.push(`Paths analyzed: ${node.pathsAnalyzed}`)
-              return parts.join('\n')
-            }}
-          />
-        </div>
-
-        {/* Progress bar */}
-        {total > 0 && (
-          <div className="flex items-center gap-2 mt-3">
-            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500"
-                style={{ width: `${progressPct}%` }}
-              />
+              {done && (
+                <Badge className="bg-green-600 text-white text-xs">Complete</Badge>
+              )}
             </div>
-            <span className="text-xs text-muted-foreground tabular-nums w-10 text-right">
-              {progressPct}%
-            </span>
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </CardHeader>
+        <CardContent>
+          {/* Legend */}
+          <div className="flex items-center gap-4 mb-3 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+              Processing
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" />
+              Completed
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-400" />
+              Pending
+            </div>
+            <div className="ml-auto tabular-nums">
+              {datasetSize} conversations
+            </div>
+          </div>
+
+          {/* Graph canvas */}
+          <div
+            ref={containerRef}
+            className="rounded-lg border bg-slate-950/5 dark:bg-slate-50/5 overflow-hidden"
+            style={{ height: 400 }}
+          >
+            <ForceGraph2D
+              ref={graphRef as React.MutableRefObject<never>}
+              graphData={graphData}
+              width={dimensions.width}
+              height={dimensions.height}
+              nodeCanvasObject={nodeCanvasObject as never}
+              linkCanvasObject={linkCanvasObject as never}
+              nodeId="id"
+              cooldownTicks={graphData.nodes.length > 50 ? 80 : 150}
+              d3AlphaDecay={0.02}
+              d3VelocityDecay={0.3}
+              enableZoomInteraction={true}
+              enablePanInteraction={true}
+              backgroundColor="transparent"
+              nodeLabel={(node: GraphNode) => {
+                const parts = [`Node: ${node.id}`]
+                if (node.labels.length) parts.push(`Labels: ${node.labels.join(', ')}`)
+                parts.push(`State: ${node.state}`)
+                parts.push(`Depth: ${node.depth}`)
+                if (node.conversations) parts.push(`Conversations: ${node.conversations}`)
+                if (node.pathsAnalyzed) parts.push(`Paths analyzed: ${node.pathsAnalyzed}`)
+                return parts.join('\n')
+              }}
+            />
+          </div>
+
+          {/* Progress bar */}
+          {total > 0 && (
+            <div className="flex items-center gap-2 mt-3">
+              <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground tabular-nums w-10 text-right">
+                {progressPct}%
+              </span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Stats & node list card */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Graph Traversal</CardTitle>
+            <div className="flex items-center gap-2">
+              {strategy && (
+                <Badge variant="secondary" className="text-xs capitalize">
+                  {strategy}
+                </Badge>
+              )}
+              {stepLabel && (
+                <Badge className="bg-amber-500 text-white text-xs">
+                  {stepLabel}
+                </Badge>
+              )}
+              {done && (
+                <Badge className="bg-green-600 text-white text-xs">Complete</Badge>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Stats row */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-lg border p-3 text-center">
+              <div className="text-2xl font-bold tabular-nums">{visited}</div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">Nodes Visited</div>
+            </div>
+            <div className="rounded-lg border p-3 text-center">
+              <div className="text-2xl font-bold tabular-nums">{datasetSize}</div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">Conversations</div>
+            </div>
+            <div className="rounded-lg border p-3 text-center">
+              <div className="text-2xl font-bold tabular-nums">{progressPct}%</div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">Progress</div>
+            </div>
+          </div>
+
+          {/* Progress bar with fraction */}
+          {total > 0 && (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {visited}/{total}
+              </span>
+            </div>
+          )}
+
+          {/* Node list */}
+          {graphData.nodes.length > 0 && (
+            <div className="space-y-2">
+              {graphData.nodes
+                .filter((n) => n.state !== 'pending')
+                .map((node) => {
+                  const isActive = node.id === currentNodeId || node.state === 'processing'
+                  // Find edges connected to this node
+                  const nodeEdges = graphData.links.filter(
+                    (l) => {
+                      const srcId = typeof l.source === 'string' ? l.source : (l.source as unknown as GraphNode).id
+                      const tgtId = typeof l.target === 'string' ? l.target : (l.target as unknown as GraphNode).id
+                      return srcId === node.id || tgtId === node.id
+                    },
+                  )
+                  return (
+                    <div
+                      key={node.id}
+                      className="flex items-start gap-3 rounded-lg border p-3"
+                    >
+                      <span
+                        className={`mt-1 inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                          isActive
+                            ? 'bg-blue-500 animate-pulse'
+                            : node.state === 'completed'
+                              ? 'bg-green-500'
+                              : node.state === 'failed'
+                                ? 'bg-red-500'
+                                : 'bg-slate-400'
+                        }`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-sm">{node.id}</span>
+                          <span className="text-xs text-muted-foreground">depth {node.depth}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {node.labels.map((label) => (
+                            <Badge key={label} variant="outline" className="text-xs py-0">
+                              {label}
+                            </Badge>
+                          ))}
+                        </div>
+                        {(node.conversations || node.pathsAnalyzed) && (
+                          <div className="flex gap-3 mt-1 text-xs text-muted-foreground">
+                            {node.conversations != null && (
+                              <span>{node.conversations} conversations</span>
+                            )}
+                            {node.pathsAnalyzed != null && (
+                              <span>{node.pathsAnalyzed} paths</span>
+                            )}
+                          </div>
+                        )}
+                        {/* Relationships */}
+                        {nodeEdges.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {nodeEdges.map((edge, i) => {
+                              const srcId = typeof edge.source === 'string' ? edge.source : (edge.source as unknown as GraphNode).id
+                              const tgtId = typeof edge.target === 'string' ? edge.target : (edge.target as unknown as GraphNode).id
+                              const isOutgoing = srcId === node.id
+                              const otherId = isOutgoing ? tgtId : srcId
+                              return (
+                                <div key={i} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  {isOutgoing ? (
+                                    <>
+                                      <span className="text-indigo-500 font-medium">{edge.label || 'RELATED_TO'}</span>
+                                      <span>→</span>
+                                      <span>{otherId}</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span>{otherId}</span>
+                                      <span>→</span>
+                                      <span className="text-indigo-500 font-medium">{edge.label || 'RELATED_TO'}</span>
+                                    </>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   )
 }

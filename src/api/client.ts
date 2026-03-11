@@ -107,6 +107,89 @@ export async function getRunEvents(runId: string, since = 0): Promise<RunEventsR
   return res.json()
 }
 
+// =============================================================================
+// Inference / Prompting API
+// =============================================================================
+
+export interface InferenceLLMRequest {
+  provider: string
+  model?: string
+  api_key?: string
+  base_url?: string
+  project_id?: string
+  location?: string
+  credentials_path?: string
+  messages: { role: string; content: string }[]
+  temperature?: number
+  max_tokens?: number
+}
+
+export interface InferenceLLMResponse {
+  response: string
+  provider: string
+  model?: string
+}
+
+export interface InferenceGraphRAGRequest {
+  question: string
+  neo4j_uri?: string
+  neo4j_user?: string
+  neo4j_password?: string
+  neo4j_database?: string
+  llm_api_key?: string
+  llm_model?: string
+  embedding_api_key?: string
+  embedding_model?: string
+  retrievers?: string[]
+  num_agents?: number
+  similarity_top_k?: number
+}
+
+export interface InferenceGraphRAGResponse {
+  answer: string
+  source_nodes: { text: string; score?: number; metadata?: Record<string, unknown> }[]
+  metadata: Record<string, unknown>
+}
+
+export interface AvailableModel {
+  run_id: string
+  model_path: string
+  label: string
+}
+
+export async function inferenceLLM(body: InferenceLLMRequest): Promise<InferenceLLMResponse> {
+  const res = await fetch(`${apiBase}/inference/llm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+export async function inferenceGraphRAG(body: InferenceGraphRAGRequest): Promise<InferenceGraphRAGResponse> {
+  const res = await fetch(`${apiBase}/inference/graphrag`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+export async function listAvailableModels(): Promise<AvailableModel[]> {
+  const res = await fetch(`${apiBase}/inference/models`)
+  if (!res.ok) throw new Error(res.statusText)
+  const data = (await res.json()) as { models: AvailableModel[] }
+  return data.models
+}
+
 export function getWebSocketUrl(): string {
   const base = apiBase || (typeof location !== 'undefined' ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}` : 'ws://localhost:8000')
   const wsPath = base.replace(/^http/, 'ws')
@@ -139,10 +222,14 @@ export interface TraversalProgressEvent {
   visited?: number
   total?: number
   step?: string
+  // neighbors_loaded
+  neighbors?: { id: string; labels: string[]; relationship_type: string }[]
   // subgraph_loaded
   node_count?: number
   edge_count?: number
   path_count?: number
+  nodes?: { id: string; labels: string[] }[]
+  edges?: { source: string; target: string; type: string }[]
   // path_reasoning
   path_index?: number
   total_paths?: number

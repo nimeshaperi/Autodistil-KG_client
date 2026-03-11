@@ -43,6 +43,11 @@ export interface LLMConfig {
   credentials_path?: string
 }
 
+export interface AgentConfig {
+  name: string
+  llm: LLMConfig
+}
+
 export interface GraphTraverserConfig {
   output_path?: string
   traversal: TraversalConfig
@@ -51,6 +56,7 @@ export interface GraphTraverserConfig {
   redis?: RedisConfig
   llm?: LLMConfig
   llm_provider?: string
+  agents?: AgentConfig[]
 }
 
 export interface ChatMLConverterConfig {
@@ -118,4 +124,11 @@ export const STAGE_LABELS: Record<StageId, string> = {
   chatml_converter: 'ChatML Converter',
   finetuner: 'FineTuner',
   evaluator: 'Evaluator',
+}
+
+export const STAGE_DESCRIPTIONS: Record<StageId, string> = {
+  graph_traverser: 'Traverse Neo4j graph and generate conversations',
+  chatml_converter: 'Convert and prepare ChatML datasets',
+  finetuner: 'Fine-tune models with Unsloth',
+  evaluator: 'Compare finetuned vs base models',
 }
