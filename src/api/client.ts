@@ -90,6 +90,23 @@ export async function healthCheck(): Promise<{ status: string }> {
   return res.json()
 }
 
+export interface RunEventsResponse {
+  run_id: string
+  events: WsEvent[]
+  total: number
+}
+
+/** Fetch stored events for a run (for replaying progress on historical runs). */
+export async function getRunEvents(runId: string, since = 0): Promise<RunEventsResponse> {
+  const res = await fetch(`${apiBase}/pipelines/runs/${runId}/events?since=${since}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const detail = (body as { detail?: string }).detail
+    throw new Error(detail ? `${res.status}: ${detail}` : res.statusText)
+  }
+  return res.json()
+}
+
 export function getWebSocketUrl(): string {
   const base = apiBase || (typeof location !== 'undefined' ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}` : 'ws://localhost:8000')
   const wsPath = base.replace(/^http/, 'ws')
