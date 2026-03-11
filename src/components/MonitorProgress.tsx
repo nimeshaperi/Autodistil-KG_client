@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
 import { getRunStatus, getRunEvents } from '@/api/client'
-import type { WsEvent } from '@/api/client'
+import type { WsEvent, RunResultResponse } from '@/api/client'
 import type { PipelineConfigPayload } from '@/types/config'
 import { STAGE_LABELS } from '@/types/config'
 import TraversalActivity from './TraversalActivity'
@@ -39,17 +39,13 @@ function stagesFromWsEvents(events: WsEvent[], fallbackOrder: string[]): { stage
         status: 'pending' as const,
         progress: 0,
       }))
-      logs.push(`[${ts}] [INFO] Pipeline started: ${orderedStages.join(' → ')}`)
+      logs.push(`[${ts}] [INFO] Pipeline started: ${orderedStages.join(' \u2192 ')}`)
       continue
     }
     if (ev.event === 'stage_start') {
       const idx = orderedStages.indexOf(ev.stage)
       if (idx >= 0 && idx < stageDetails.length) {
-        stageDetails[idx] = {
-          ...stageDetails[idx],
-          status: 'running',
-          progress: 0,
-        }
+        stageDetails[idx] = { ...stageDetails[idx], status: 'running', progress: 0 }
       }
       logs.push(`[${ts}] [INFO] Stage started: ${ev.stage}`)
       continue
@@ -66,7 +62,7 @@ function stagesFromWsEvents(events: WsEvent[], fallbackOrder: string[]): { stage
         if (ev.success) completedCount++
       }
       const level = ev.success ? 'INFO' : 'ERROR'
-      logs.push(`[${ts}] [${level}] Stage ${ev.success ? 'completed' : 'failed'}: ${ev.stage}${ev.error ? ` — ${ev.error}` : ''}`)
+      logs.push(`[${ts}] [${level}] Stage ${ev.success ? 'completed' : 'failed'}: ${ev.stage}${ev.error ? ` \u2014 ${ev.error}` : ''}`)
       continue
     }
     if (ev.event === 'traversal_progress') continue
@@ -93,6 +89,47 @@ function stagesFromWsEvents(events: WsEvent[], fallbackOrder: string[]): { stage
     return { stages: stageDetails, overallProgress: 100, logs }
   }
   return { stages: stageDetails, overallProgress, logs }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Synthesize stage details from REST status (fallback when no events)*/
+/* ------------------------------------------------------------------ */
+
+function stagesFromRunStatus(status: RunResultResponse): StageDetail[] {
+  const stageOrder = status.stages ?? []
+  const results = status.results ?? []
+  const currentStage = status.current_stage
+
+  return stageOrder.map((id, idx) => {
+    const result = results[idx]
+    let stageStatus: StageDetail['status'] = 'pending'
+    let progress = 0
+    let error: string | undefined
+
+    if (result) {
+      stageStatus = result.success ? 'completed' : 'failed'
+      progress = result.success ? 100 : 0
+      error = result.error
+    } else if (currentStage === id) {
+      stageStatus = 'running'
+      progress = 0
+    } else if (currentStage) {
+      // If there's a current stage, stages before it (that have no result) are completed
+      const currentIdx = stageOrder.indexOf(currentStage)
+      if (currentIdx >= 0 && idx < currentIdx) {
+        stageStatus = 'completed'
+        progress = 100
+      }
+    }
+
+    return {
+      id,
+      name: STAGE_LABELS[id as keyof typeof STAGE_LABELS] ?? id,
+      status: stageStatus,
+      progress,
+      error,
+    }
+  })
 }
 
 /* ------------------------------------------------------------------ */
@@ -137,42 +174,46 @@ function StageStatusIcon({ status }: { status: StageDetail['status'] }) {
 /* ------------------------------------------------------------------ */
 
 export default function MonitorProgress({ runId, config, wsEvents = [], isConnected, onDone }: MonitorProgressProps) {
-  // Events fetched from API for historical / polling runs
   const [polledEvents, setPolledEvents] = useState<WsEvent[]>([])
   const [polledStages, setPolledStages] = useState<string[]>([])
   const [runStatus, setRunStatus] = useState<string | null>(null)
+  // Fallback: stage details derived directly from REST status (when events are unavailable)
+  const [statusDerivedStages, setStatusDerivedStages] = useState<StageDetail[]>([])
+  const [statusDerivedLogs, setStatusDerivedLogs] = useState<string[]>([])
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const eventCursorRef = useRef(0)
+  const lastStatusLogRef = useRef<string | null>(null)
 
   const runOrder = config?.run_stages ?? polledStages
   const hasLiveEvents = wsEvents.length > 0
 
-  // Determine which events to use: live WS events take priority over polled events
   const effectiveEvents = hasLiveEvents ? wsEvents : polledEvents
 
-  // Derive stage details from events
-  const derived = useMemo(() => {
+  // Derive stage details from events (when we have them)
+  const eventDerived = useMemo(() => {
     if (effectiveEvents.length === 0 && runOrder.length === 0) return null
+    if (effectiveEvents.length === 0) return null
     return stagesFromWsEvents(effectiveEvents, runOrder)
   }, [effectiveEvents, runOrder])
 
   // Poll for events and status when we don't have live WS events
   useEffect(() => {
     if (!runId || hasLiveEvents) {
-      // Clear polled state when switching to a live session
       if (hasLiveEvents) {
         setPolledEvents([])
         setPolledStages([])
+        setStatusDerivedStages([])
+        setStatusDerivedLogs([])
         eventCursorRef.current = 0
+        lastStatusLogRef.current = null
       }
       return
     }
 
-    // Initial fetch
     let cancelled = false
+
     const fetchData = async () => {
       try {
-        // Fetch status first to get stages
         const status = await getRunStatus(runId)
         if (cancelled) return
         setRunStatus(status.status)
@@ -180,57 +221,73 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
           setPolledStages(status.stages)
         }
 
-        // Fetch events for replay
-        const evtRes = await getRunEvents(runId, eventCursorRef.current)
-        if (cancelled) return
-        if (evtRes.events.length > 0) {
-          setPolledEvents((prev) => [...prev, ...evtRes.events])
-          eventCursorRef.current = evtRes.total
+        // Always derive stages from status as a fallback
+        if (status.stages && status.stages.length > 0) {
+          setStatusDerivedStages(stagesFromRunStatus(status))
+          // Add a log entry for the current state
+          const currentLabel = status.current_stage
+            ? (STAGE_LABELS[status.current_stage as keyof typeof STAGE_LABELS] ?? status.current_stage)
+            : null
+          const completedCount = (status.results ?? []).filter((r) => r.success).length
+          const totalCount = status.stages.length
+          const ts = new Date().toISOString().slice(11, 19)
+          let logMsg: string
+          if (status.status === 'running' && currentLabel) {
+            logMsg = `[${ts}] [INFO] Running stage: ${currentLabel} (${completedCount}/${totalCount} completed)`
+          } else if (status.status === 'completed') {
+            logMsg = `[${ts}] [INFO] Pipeline completed (${completedCount}/${totalCount} stages)`
+          } else if (status.status === 'failed') {
+            logMsg = `[${ts}] [ERROR] Pipeline failed: ${status.error ?? 'unknown error'}`
+          } else {
+            logMsg = `[${ts}] [INFO] Status: ${status.status}`
+          }
+          if (logMsg !== lastStatusLogRef.current) {
+            lastStatusLogRef.current = logMsg
+            setStatusDerivedLogs((prev) => [...prev, logMsg])
+          }
         }
 
-        // If done, notify parent
+        // Try to fetch events (may fail on older API versions)
+        try {
+          const evtRes = await getRunEvents(runId, eventCursorRef.current)
+          if (cancelled) return
+          if (evtRes.events.length > 0) {
+            setPolledEvents((prev) => [...prev, ...evtRes.events])
+            eventCursorRef.current = evtRes.total
+          }
+        } catch {
+          // /events endpoint not available — rely on status-derived stages
+        }
+
         if (status.status === 'completed' || status.status === 'failed') {
           onDone(status)
         }
       } catch {
-        // Ignore fetch errors during polling
+        // Ignore fetch errors — run might not be registered yet
       }
     }
 
     // Reset state for new run
     setPolledEvents([])
     setPolledStages([])
+    setStatusDerivedStages([])
+    setStatusDerivedLogs([])
     setRunStatus(null)
     eventCursorRef.current = 0
+    lastStatusLogRef.current = null
 
     fetchData()
 
-    // Continue polling while running
     pollRef.current = setInterval(async () => {
-      try {
-        const status = await getRunStatus(runId)
-        if (cancelled) return
-        setRunStatus(status.status)
-        if (status.stages && status.stages.length > 0) {
-          setPolledStages(status.stages)
+      if (cancelled) return
+      await fetchData()
+      // Stop polling once done
+      const currentStatus = await getRunStatus(runId).catch(() => null)
+      if (currentStatus && (currentStatus.status === 'completed' || currentStatus.status === 'failed')) {
+        if (pollRef.current) {
+          clearInterval(pollRef.current)
+          pollRef.current = null
         }
-
-        const evtRes = await getRunEvents(runId, eventCursorRef.current)
-        if (cancelled) return
-        if (evtRes.events.length > 0) {
-          setPolledEvents((prev) => [...prev, ...evtRes.events])
-          eventCursorRef.current = evtRes.total
-        }
-
-        if (status.status === 'completed' || status.status === 'failed') {
-          if (pollRef.current) {
-            clearInterval(pollRef.current)
-            pollRef.current = null
-          }
-          onDone(status)
-        }
-      } catch {
-        // ignore
       }
     }, 2000)
 
@@ -243,22 +300,29 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
     }
   }, [runId, hasLiveEvents, onDone])
 
-  const displayStages: StageDetail[] = derived
-    ? derived.stages
-    : runOrder.map((id) => ({
-        id,
-        name: STAGE_LABELS[id as keyof typeof STAGE_LABELS] ?? id,
-        status: 'pending' as const,
-        progress: 0,
-      }))
+  // Priority: event-derived > status-derived > empty
+  const displayStages: StageDetail[] = eventDerived
+    ? eventDerived.stages
+    : statusDerivedStages.length > 0
+      ? statusDerivedStages
+      : runOrder.map((id) => ({
+          id,
+          name: STAGE_LABELS[id as keyof typeof STAGE_LABELS] ?? id,
+          status: 'pending' as const,
+          progress: 0,
+        }))
 
-  const displayProgress = derived?.overallProgress ?? 0
-  const displayLogs = derived?.logs ?? []
+  const displayProgress = eventDerived
+    ? eventDerived.overallProgress
+    : statusDerivedStages.length > 0
+      ? Math.round((statusDerivedStages.filter((s) => s.status === 'completed').length / (statusDerivedStages.length || 1)) * 100)
+      : 0
+  const displayLogs = eventDerived ? eventDerived.logs : statusDerivedLogs
   const completedCount = displayStages.filter((s) => s.status === 'completed').length
 
   return (
     <div className="space-y-6">
-      {/* ── Overall Progress ── */}
+      {/* -- Overall Progress -- */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -289,7 +353,7 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
         </CardContent>
       </Card>
 
-      {/* ── Pipeline Stages (visual flow) ── */}
+      {/* -- Pipeline Stages -- */}
       <Card>
         <CardHeader>
           <CardTitle>Stage Details</CardTitle>
@@ -304,7 +368,6 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
             <div className="space-y-3">
               {displayStages.map((stage, idx) => (
                 <div key={stage.id ?? stage.name}>
-                  {/* Connector line */}
                   {idx > 0 && (
                     <div className="flex justify-center -mt-3 mb-1">
                       <div className={`w-0.5 h-4 ${
@@ -361,13 +424,13 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
         </CardContent>
       </Card>
 
-      {/* ── Graph Visualization (animated traversal view) ── */}
+      {/* -- Graph Visualization -- */}
       <GraphVisualization wsEvents={effectiveEvents} />
 
-      {/* ── Traversal Activity (detailed node-level progress) ── */}
+      {/* -- Traversal Activity -- */}
       <TraversalActivity wsEvents={effectiveEvents} />
 
-      {/* ── Execution Logs ── */}
+      {/* -- Execution Logs -- */}
       <Card>
         <CardHeader>
           <CardTitle>Execution Logs</CardTitle>
