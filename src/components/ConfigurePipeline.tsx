@@ -979,13 +979,62 @@ function EvaluatorForm({
               </Label>
             </div>
             {value.graph_rag_enabled && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <LabelInput label="Neo4j URI" value={value.graph_rag_config?.neo4j_uri ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_uri: v } })} placeholder="bolt://localhost:7687" />
-                <LabelInput label="Neo4j User" value={value.graph_rag_config?.neo4j_user ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_user: v } })} placeholder="neo4j" />
-                <LabelInput label="Neo4j Password" type="password" value={value.graph_rag_config?.neo4j_password ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_password: v } })} placeholder="password" />
-                <LabelInput label="Neo4j Database" value={value.graph_rag_config?.neo4j_database ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_database: v } })} placeholder="neo4j" />
-                <LabelInput label="LLM API Key" type="password" value={value.graph_rag_config?.llm_api_key ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, llm_api_key: v } })} placeholder="sk-..." />
-                <LabelInput label="LLM Model" value={value.graph_rag_config?.llm_model ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, llm_model: v } })} placeholder="gpt-4" />
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <LabelInput label="Neo4j URI" value={value.graph_rag_config?.neo4j_uri ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_uri: v } })} placeholder="bolt://localhost:7687" />
+                  <LabelInput label="Neo4j User" value={value.graph_rag_config?.neo4j_user ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_user: v } })} placeholder="neo4j" />
+                  <LabelInput label="Neo4j Password" type="password" value={value.graph_rag_config?.neo4j_password ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_password: v } })} placeholder="password" />
+                  <LabelInput label="Neo4j Database" value={value.graph_rag_config?.neo4j_database ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, neo4j_database: v } })} placeholder="neo4j" />
+                  <LabelInput label="LLM API Key" type="password" value={value.graph_rag_config?.llm_api_key ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, llm_api_key: v } })} placeholder="sk-..." />
+                  <LabelInput label="LLM Model" value={value.graph_rag_config?.llm_model ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, llm_model: v } })} placeholder="gpt-4" />
+                  <LabelInput label="Embedding API Key" type="password" value={value.graph_rag_config?.embedding_api_key ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, embedding_api_key: v } })} placeholder="sk-... (defaults to LLM key)" />
+                  <LabelInput label="Embedding Model" value={value.graph_rag_config?.embedding_model ?? ''} onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, embedding_model: v } })} placeholder="text-embedding-3-small" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Retrievers</Label>
+                  <div className="flex gap-3">
+                    {(['vector', 'cypher', 'synonym'] as const).map((r) => {
+                      const current = value.graph_rag_config?.retrievers ?? ['vector', 'cypher', 'synonym']
+                      const active = current.includes(r)
+                      return (
+                        <div key={r} className="flex items-center gap-2">
+                          <Switch
+                            id={`graphrag_ret_${r}`}
+                            checked={active}
+                            onCheckedChange={(checked) => {
+                              const next = checked ? [...current, r] : current.filter((x) => x !== r)
+                              update({ graph_rag_config: { ...value.graph_rag_config, retrievers: next } })
+                            }}
+                          />
+                          <Label htmlFor={`graphrag_ret_${r}`} className="font-normal cursor-pointer capitalize">
+                            {r === 'vector' ? 'Vector' : r === 'cypher' ? 'Cypher' : 'Synonym'}
+                          </Label>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Vector uses embedding similarity, Cypher generates graph queries, Synonym uses LLM keyword expansion.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <LabelInput
+                    label="Parallel Agents"
+                    type="number"
+                    value={String(value.graph_rag_config?.num_agents ?? 1)}
+                    onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, num_agents: Math.max(1, parseInt(v, 10) || 1) } })}
+                    placeholder="1"
+                    help="More agents explore different graph neighborhoods in parallel for broader coverage"
+                  />
+                  <LabelInput
+                    label="Top K Results"
+                    type="number"
+                    value={String(value.graph_rag_config?.similarity_top_k ?? 5)}
+                    onChange={(v) => update({ graph_rag_config: { ...value.graph_rag_config, similarity_top_k: Math.max(1, parseInt(v, 10) || 5) } })}
+                    placeholder="5"
+                    help="Number of top results each retriever returns"
+                  />
+                </div>
               </div>
             )}
           </div>

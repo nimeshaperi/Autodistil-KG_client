@@ -93,6 +93,8 @@ export interface EvaluatorConfig {
     embedding_api_key?: string
     embedding_model?: string
     retrievers?: string[]
+    num_agents?: number
+    similarity_top_k?: number
   }
   judge_provider?: string
   judge_model?: string

@@ -70,6 +70,20 @@ export async function downloadRunArtifact(
   URL.revokeObjectURL(a.href)
 }
 
+export interface RunSummary {
+  run_id: string
+  status: string
+  error?: string
+  stages?: string[]
+}
+
+export async function listRuns(): Promise<RunSummary[]> {
+  const res = await fetch(`${apiBase}/pipelines/runs`)
+  if (!res.ok) throw new Error(res.statusText)
+  const data = (await res.json()) as { runs: RunSummary[] }
+  return data.runs
+}
+
 export async function healthCheck(): Promise<{ status: string }> {
   const res = await fetch(`${apiBase}/health`)
   if (!res.ok) throw new Error(res.statusText)
