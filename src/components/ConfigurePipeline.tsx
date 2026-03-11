@@ -78,7 +78,7 @@ const defaultGraphTraverser: GraphTraverserConfig = {
   output_path: 'output/dataset.jsonl',
   traversal: defaultTraversal,
   dataset: defaultDataset,
-  neo4j: { uri: 'neo4j://localhost:7687', database: 'neo4j', username: 'neo4j', password: '' },
+  neo4j: { uri: 'bolt://localhost:7687', database: '', username: 'neo4j', password: '' },
   redis: defaultRedis,
   llm: defaultLLM,
 }

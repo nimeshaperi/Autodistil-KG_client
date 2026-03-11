@@ -99,6 +99,38 @@ export interface RunResultResponse {
   current_stage?: string
 }
 
+export interface TraversalProgressEvent {
+  event: 'traversal_progress'
+  type: string
+  node_id?: string
+  labels?: string[]
+  depth?: number
+  visited?: number
+  total?: number
+  step?: string
+  // subgraph_loaded
+  node_count?: number
+  edge_count?: number
+  path_count?: number
+  // path_reasoning
+  path_index?: number
+  total_paths?: number
+  path_description?: string
+  // node_done
+  dataset_size?: number
+  paths_analyzed?: number
+  conversations?: number
+  // traversal_start / traversal_complete
+  strategy?: string
+  seed_nodes?: number
+  max_nodes?: number
+  max_depth?: number
+  // synthesis
+  path_analyses_count?: number
+  // reasoning
+  reasoning_depth?: number
+}
+
 export type WsEvent =
   | { event: 'run_start'; run_id: string }
   | { event: 'pipeline_start'; stages: string[] }
@@ -107,6 +139,7 @@ export type WsEvent =
   | { event: 'done'; success: boolean; context?: Record<string, unknown>; results?: unknown[] }
   | { event: 'error'; message: string }
   | { event: 'log'; level: string; logger: string; message: string }
+  | TraversalProgressEvent
 
 export interface WsRunCallbacks {
   onRunId: (runId: string) => void

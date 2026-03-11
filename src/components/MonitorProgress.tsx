@@ -7,6 +7,7 @@ import { getRunStatus } from '@/api/client'
 import type { WsEvent } from '@/api/client'
 import type { PipelineConfigPayload } from '@/types/config'
 import { STAGE_LABELS } from '@/types/config'
+import TraversalActivity from './TraversalActivity'
 
 function stagesFromWsEvents(events: WsEvent[], runOrder: string[]): { stages: StageDetail[]; overallProgress: number; logs: string[] } {
   let orderedStages = runOrder
@@ -63,9 +64,15 @@ function stagesFromWsEvents(events: WsEvent[], runOrder: string[]): { stages: St
       logs.push(`[${ts}] [${level}] Stage ${ev.success ? 'completed' : 'failed'}: ${ev.stage}${ev.error ? ` — ${ev.error}` : ''}`)
       continue
     }
+    if (ev.event === 'traversal_progress') {
+      // Handled by TraversalActivity — don't duplicate in logs
+      continue
+    }
     if (ev.event === 'log') {
       // Handle streaming log events from the pipeline
       const logEvent = ev as { event: 'log'; level: string; logger: string; message: string }
+      // Skip structured traversal log lines (already shown in TraversalActivity)
+      if (logEvent.message.startsWith('traversal:')) continue
       logs.push(`[${ts}] [${logEvent.level}] ${logEvent.message}`)
       continue
     }
@@ -291,6 +298,8 @@ export default function MonitorProgress({ runId, config, wsEvents = [], isConnec
           ))}
         </CardContent>
       </Card>
+
+      <TraversalActivity wsEvents={wsEvents} />
 
       <Card>
         <CardHeader>
