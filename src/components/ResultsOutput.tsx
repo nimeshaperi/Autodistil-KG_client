@@ -14,6 +14,7 @@ interface ResultsOutputProps {
   runId: string | null
   result: unknown
   onRefresh: () => void
+  stageFilter?: string
 }
 
 interface PerfStats {
@@ -254,7 +255,7 @@ function PerQuestionDetails({ report }: { report: EvalReport }) {
   )
 }
 
-export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutputProps) {
+export default function ResultsOutput({ runId, result, onRefresh, stageFilter }: ResultsOutputProps) {
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const runResult = result as RunResultResponse | null
   const hasResult = runResult != null
@@ -262,9 +263,12 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
   const results = runResult?.results ?? []
   const context = runResult?.context ?? {}
   const error = runResult?.error
-  const chatmlPath = context?.chatml_dataset_path as string | undefined
-  const preparedPath = context?.prepared_dataset_path as string | undefined
-  const evalReportPath = context?.eval_report_path as string | undefined
+  const chatmlPath = (!stageFilter || stageFilter === 'chatml_converter' || stageFilter === 'graph_traverser')
+    ? context?.chatml_dataset_path as string | undefined : undefined
+  const preparedPath = (!stageFilter || stageFilter === 'chatml_converter' || stageFilter === 'finetuner')
+    ? context?.prepared_dataset_path as string | undefined : undefined
+  const evalReportPath = (!stageFilter || stageFilter === 'evaluator')
+    ? context?.eval_report_path as string | undefined : undefined
 
   // Extract the full eval report from the last result metadata
   const lastResult = results.length > 0 ? results[results.length - 1] : null
@@ -380,7 +384,7 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
         </CardContent>
       </Card>
 
-      {rawReport && rawReport.systems && Object.keys(rawReport.systems).length > 0 && (
+      {(!stageFilter || stageFilter === 'evaluator') && rawReport && rawReport.systems && Object.keys(rawReport.systems).length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Evaluation Comparison</CardTitle>
@@ -397,7 +401,7 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
         </Card>
       )}
 
-      {rawReport && (rawReport.per_question ?? []).length > 0 && (
+      {(!stageFilter || stageFilter === 'evaluator') && rawReport && (rawReport.per_question ?? []).length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Per-Question Breakdown</CardTitle>
@@ -411,7 +415,7 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
         </Card>
       )}
 
-      {!rawReport && evalMetrics && (
+      {(!stageFilter || stageFilter === 'evaluator') && !rawReport && evalMetrics && (
         <Card>
           <CardHeader>
             <CardTitle>Evaluation Metrics</CardTitle>
