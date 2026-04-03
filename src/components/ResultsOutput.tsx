@@ -16,6 +16,21 @@ interface ResultsOutputProps {
   onRefresh: () => void
 }
 
+interface PerfStats {
+  num_predictions?: number
+  total_time_sec?: number
+  avg_latency_sec?: number
+  p50_latency_sec?: number
+  p95_latency_sec?: number
+  p99_latency_sec?: number
+  min_latency_sec?: number
+  max_latency_sec?: number
+  total_input_tokens?: number
+  total_output_tokens?: number
+  avg_output_tokens?: number
+  throughput_tokens_per_sec?: number
+}
+
 interface EvalReport {
   evalg_mode?: string
   num_samples?: number
@@ -25,6 +40,7 @@ interface EvalReport {
     label?: string
     kind?: string
     aggregate_metrics?: Record<string, number>
+    performance?: PerfStats
   }>
   per_question?: Array<{
     index: number
@@ -32,6 +48,7 @@ interface EvalReport {
     reference: string
     predictions: Record<string, string>
     scores: Record<string, Record<string, number>>
+    performance?: Record<string, { latency_sec?: number; output_tokens?: number; tokens_per_sec?: number }>
   }>
 }
 
@@ -43,7 +60,9 @@ function MetricsComparisonTable({ report }: { report: EvalReport }) {
   const allMetricNames = new Set<string>()
   for (const sys of Object.values(systems)) {
     for (const key of Object.keys(sys.aggregate_metrics ?? {})) {
-      allMetricNames.add(key)
+      if (!key.endsWith('_fail_count') && !key.endsWith('_failed')) {
+        allMetricNames.add(key)
+      }
     }
   }
   const metricNames = Array.from(allMetricNames).sort()
@@ -102,6 +121,86 @@ function MetricsComparisonTable({ report }: { report: EvalReport }) {
   )
 }
 
+function PerformanceTable({ report }: { report: EvalReport }) {
+  const systems = report.systems ?? {}
+  const systemIds = Object.keys(systems)
+  if (systemIds.length === 0) return null
+
+  // Check if any system has performance data
+  const hasPerf = systemIds.some((id) => {
+    const p = systems[id]?.performance
+    return p && p.num_predictions && p.num_predictions > 0
+  })
+  if (!hasPerf) return null
+
+  const perfRows: Array<{ label: string; key: keyof PerfStats; unit: string; format: (v: number) => string; lowerIsBetter?: boolean }> = [
+    { label: 'Avg Latency', key: 'avg_latency_sec', unit: 's', format: (v) => v.toFixed(3) },
+    { label: 'P50 Latency', key: 'p50_latency_sec', unit: 's', format: (v) => v.toFixed(3) },
+    { label: 'P95 Latency', key: 'p95_latency_sec', unit: 's', format: (v) => v.toFixed(3), lowerIsBetter: true },
+    { label: 'Min Latency', key: 'min_latency_sec', unit: 's', format: (v) => v.toFixed(3) },
+    { label: 'Max Latency', key: 'max_latency_sec', unit: 's', format: (v) => v.toFixed(3) },
+    { label: 'Throughput', key: 'throughput_tokens_per_sec', unit: ' tok/s', format: (v) => v.toFixed(1) },
+    { label: 'Avg Output Tokens', key: 'avg_output_tokens', unit: '', format: (v) => v.toFixed(0) },
+    { label: 'Total Time', key: 'total_time_sec', unit: 's', format: (v) => v.toFixed(1) },
+    { label: 'Total Output Tokens', key: 'total_output_tokens', unit: '', format: (v) => v.toFixed(0) },
+  ]
+
+  const findBest = (key: keyof PerfStats, lowerIsBetter = false): string | null => {
+    let best: string | null = null
+    let bestVal = lowerIsBetter ? Infinity : -Infinity
+    for (const sysId of systemIds) {
+      const val = systems[sysId]?.performance?.[key]
+      if (val == null) continue
+      if (lowerIsBetter ? val < bestVal : val > bestVal) {
+        bestVal = val
+        best = sysId
+      }
+    }
+    return best
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left p-2 font-medium text-muted-foreground">Performance</th>
+            {systemIds.map((id) => (
+              <th key={id} className="text-right p-2 font-medium">
+                {systems[id]?.label ?? id}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {perfRows.map(({ label, key, unit, format, lowerIsBetter }) => {
+            const latencyMetric = key.includes('latency') || key === 'total_time_sec'
+            const isLower = lowerIsBetter ?? latencyMetric
+            const bestId = key === 'throughput_tokens_per_sec' ? findBest(key, false) : findBest(key, isLower)
+            return (
+              <tr key={key} className="border-b last:border-0">
+                <td className="p-2 font-mono text-xs">{label}</td>
+                {systemIds.map((sysId) => {
+                  const val = systems[sysId]?.performance?.[key]
+                  const isBest = sysId === bestId && systemIds.length > 1
+                  return (
+                    <td
+                      key={sysId}
+                      className={`text-right p-2 font-mono text-xs ${isBest ? 'font-bold text-green-600 dark:text-green-400' : ''}`}
+                    >
+                      {val != null ? `${format(val)}${unit}` : '—'}
+                    </td>
+                  )
+                })}
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function PerQuestionDetails({ report }: { report: EvalReport }) {
   const questions = report.per_question ?? []
   const systemIds = Object.keys(report.systems ?? {})
@@ -122,21 +221,31 @@ function PerQuestionDetails({ report }: { report: EvalReport }) {
                 <span className="text-xs font-medium text-muted-foreground">Reference:</span>
                 <p className="text-xs mt-1 p-2 rounded bg-muted/50 border whitespace-pre-wrap">{q.reference}</p>
               </div>
-              {systemIds.map((sysId) => (
-                <div key={sysId}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium">{report.systems?.[sysId]?.label ?? sysId}</span>
-                    {q.scores?.[sysId] && (
-                      <span className="text-xs text-muted-foreground">
-                        [{Object.entries(q.scores[sysId]).map(([k, v]) => `${k}: ${v.toFixed(2)}`).join(', ')}]
-                      </span>
-                    )}
+              {systemIds.map((sysId) => {
+                const perf = q.performance?.[sysId]
+                return (
+                  <div key={sysId}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium">{report.systems?.[sysId]?.label ?? sysId}</span>
+                      {q.scores?.[sysId] && (
+                        <span className="text-xs text-muted-foreground">
+                          [{Object.entries(q.scores[sysId]).filter(([k]) => !k.endsWith('_failed')).map(([k, v]) => `${k}: ${v != null ? (v as number).toFixed(2) : '—'}`).join(', ')}]
+                        </span>
+                      )}
+                      {perf && perf.latency_sec != null && perf.latency_sec > 0 && (
+                        <span className="text-xs text-primary font-mono">
+                          {perf.latency_sec.toFixed(2)}s
+                          {perf.tokens_per_sec ? ` | ${perf.tokens_per_sec.toFixed(0)} tok/s` : ''}
+                          {perf.output_tokens ? ` | ${perf.output_tokens} tokens` : ''}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs mt-1 p-2 rounded bg-muted/30 border whitespace-pre-wrap">
+                      {q.predictions?.[sysId] ?? '(no prediction)'}
+                    </p>
                   </div>
-                  <p className="text-xs mt-1 p-2 rounded bg-muted/30 border whitespace-pre-wrap">
-                    {q.predictions?.[sysId] ?? '(no prediction)'}
-                  </p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -281,8 +390,9 @@ export default function ResultsOutput({ runId, result, onRefresh }: ResultsOutpu
               {rawReport.metrics_used && <span>Metrics: {rawReport.metrics_used.join(', ')}</span>}
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-6">
             <MetricsComparisonTable report={rawReport} />
+            <PerformanceTable report={rawReport} />
           </CardContent>
         </Card>
       )}

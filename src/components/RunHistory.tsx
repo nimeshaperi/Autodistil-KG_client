@@ -7,9 +7,10 @@ interface RunHistoryProps {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  running: 'bg-blue-500',
-  completed: 'bg-green-500',
+  running: 'bg-primary',
+  completed: 'bg-green-500/40',
   failed: 'bg-red-500',
+  cancelled: 'bg-muted-foreground',
   queued: 'bg-yellow-500',
 }
 

@@ -60,7 +60,6 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
   let datasetSize = 0
   let done = false
   let currentNodeId: string | null = null
-  let lastNodeId: string | null = null
 
   for (const ev of events) {
     switch (ev.type) {
@@ -86,39 +85,89 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
           existing.labels = ev.labels ?? existing.labels
           existing.__startedAt = Date.now()
         }
-        // Create link from previous node to current (traversal edge)
-        if (lastNodeId && lastNodeId !== id) {
-          const linkKey = `${lastNodeId}→${id}`
-          if (!linkSet.has(linkKey)) {
-            linkSet.add(linkKey)
-            links.push({ source: lastNodeId, target: id })
-          }
-        }
+        // Real edges are added by subgraph_loaded / neighbors_loaded events
         if (ev.total) total = ev.total
         break
       }
 
       case 'subgraph_loaded': {
-        // For reasoning strategy, we get subgraph info
+        // Reasoning strategy — add center node, neighbor nodes, and real edges
         const id = ev.node_id
         if (id && nodeMap.has(id)) {
           const node = nodeMap.get(id)!
           node.labels = ev.labels ?? node.labels
+        }
+        // Add neighbor nodes from the subgraph
+        if (ev.nodes) {
+          for (const n of ev.nodes) {
+            if (!nodeMap.has(n.id)) {
+              nodeMap.set(n.id, {
+                id: n.id,
+                labels: n.labels ?? [],
+                state: 'pending',
+                depth: (id ? (nodeMap.get(id)?.depth ?? 0) : 0) + 1,
+              })
+            }
+          }
+        }
+        // Add real relationship edges from the subgraph
+        if (ev.edges) {
+          for (const e of ev.edges) {
+            const linkKey = `${e.source}→${e.target}`
+            const reverseKey = `${e.target}→${e.source}`
+            if (!linkSet.has(linkKey) && !linkSet.has(reverseKey)) {
+              linkSet.add(linkKey)
+              links.push({ source: e.source, target: e.target, label: e.type })
+            }
+          }
+        }
+        if (ev.visited) visited = ev.visited
+        if (ev.total) total = ev.total
+        break
+      }
+
+      case 'neighbors_loaded': {
+        // Simple strategy — add neighbor nodes and edges to center
+        const id = ev.node_id
+        if (id) {
+          if (nodeMap.has(id)) {
+            const node = nodeMap.get(id)!
+            node.labels = ev.labels ?? node.labels
+          }
+          if (ev.neighbors) {
+            const neighbors = ev.neighbors
+            for (const n of neighbors) {
+              if (!nodeMap.has(n.id)) {
+                nodeMap.set(n.id, {
+                  id: n.id,
+                  labels: n.labels ?? [],
+                  state: 'pending',
+                  depth: (nodeMap.get(id)?.depth ?? 0) + 1,
+                })
+              }
+              const linkKey = `${id}→${n.id}`
+              const reverseKey = `${n.id}→${id}`
+              if (!linkSet.has(linkKey) && !linkSet.has(reverseKey)) {
+                linkSet.add(linkKey)
+                links.push({ source: id, target: n.id, label: n.relationship_type })
+              }
+            }
+          }
         }
         break
       }
 
       case 'node_done': {
         const id = ev.node_id ?? '?'
+        const isError = ev.status === 'error'
         if (nodeMap.has(id)) {
           const node = nodeMap.get(id)!
-          node.state = 'completed'
+          node.state = isError ? 'failed' : 'completed'
           node.conversations = ev.conversations
           node.pathsAnalyzed = ev.paths_analyzed
         }
         visited = ev.visited ?? visited
         datasetSize = ev.dataset_size ?? datasetSize
-        lastNodeId = id
         if (currentNodeId === id) currentNodeId = null
         break
       }
@@ -152,13 +201,13 @@ function deriveGraphData(events: TraversalProgressEvent[]): {
 
 const NODE_COLORS: Record<string, string> = {
   pending: '#94a3b8',    // slate-400
-  processing: '#3b82f6', // blue-500
+  processing: '#5b7fb5', // muted blue
   completed: '#22c55e',  // green-500
   failed: '#ef4444',     // red-500
 }
 
 const NODE_COLORS_GLOW: Record<string, string> = {
-  processing: 'rgba(59, 130, 246, 0.4)',
+  processing: 'rgba(91, 127, 181, 0.4)',
   completed: 'rgba(34, 197, 94, 0.15)',
 }
 
@@ -172,8 +221,8 @@ interface GraphVisualizationProps {
 
 export default function GraphVisualization({ wsEvents }: GraphVisualizationProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const graphRef = useRef<{ d3Force: (name: string) => unknown } | null>(null)
-  const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
+  const graphRef = useRef<{ d3Force: (name: string) => unknown; zoomToFit: (ms?: number, px?: number) => void } | null>(null)
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
   const animFrameRef = useRef<number>(0)
   const [, forceRender] = useState(0)
 
@@ -188,20 +237,41 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
     [traversalEvents],
   )
 
-  // Don't render if no traversal events
-  if (traversalEvents.length === 0) return null
-
-  // Resize observer
+  // Resize observer — measure the container and pass exact dimensions to ForceGraph2D
+  // Re-run when traversalEvents arrive (component may have been returning null before)
+  const hasEvents = traversalEvents.length > 0
   useEffect(() => {
+    if (!hasEvents) return
     const el = containerRef.current
     if (!el) return
-    const ro = new ResizeObserver((entries) => {
-      const { width } = entries[0].contentRect
-      setDimensions({ width: Math.max(300, width), height: 400 })
-    })
+    const measure = () => {
+      const rect = el.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        setDimensions({ width: Math.floor(rect.width), height: Math.floor(rect.height) })
+      }
+    }
+    // Initial measurement (with small delay for layout to settle)
+    const raf = requestAnimationFrame(measure)
+    const ro = new ResizeObserver(() => measure())
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [hasEvents])
+
+  // Center the graph whenever nodes change or dimensions become available
+  const prevNodeCount = useRef(0)
+  useEffect(() => {
+    if (!dimensions || graphData.nodes.length === 0) return
+    if (graphData.nodes.length !== prevNodeCount.current) {
+      prevNodeCount.current = graphData.nodes.length
+      const timer = setTimeout(() => {
+        graphRef.current?.zoomToFit(400, 60)
+      }, 600)
+      return () => clearTimeout(timer)
+    }
+  }, [graphData.nodes.length, dimensions])
 
   // Animation loop for pulsing active nodes
   useEffect(() => {
@@ -231,13 +301,13 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
       const baseRadius = isActive ? 6 : node.state === 'completed' ? 5 : 4
       const radius = baseRadius / Math.max(globalScale * 0.5, 0.5)
 
-      // Glow effect for active/completed nodes
+      // Glow effect for active nodes
       if (isActive) {
         const pulseT = ((Date.now() - (node.__startedAt ?? Date.now())) / 800) % 1
         const glowRadius = radius * (1.5 + pulseT * 1.5)
         const gradient = ctx.createRadialGradient(x, y, radius, x, y, glowRadius)
         gradient.addColorStop(0, NODE_COLORS_GLOW.processing!)
-        gradient.addColorStop(1, 'rgba(59, 130, 246, 0)')
+        gradient.addColorStop(1, 'rgba(91, 127, 181, 0)')
         ctx.beginPath()
         ctx.arc(x, y, glowRadius, 0, 2 * Math.PI)
         ctx.fillStyle = gradient
@@ -259,30 +329,9 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
       ctx.fill()
 
       // Border
-      ctx.strokeStyle = isActive ? '#1d4ed8' : node.state === 'completed' ? '#16a34a' : '#64748b'
+      ctx.strokeStyle = isActive ? '#5b7fb5' : node.state === 'completed' ? '#16a34a' : '#64748b'
       ctx.lineWidth = isActive ? 1.5 / globalScale : 0.5 / globalScale
       ctx.stroke()
-
-      // Label (show when zoomed in enough or for active node)
-      if (globalScale > 1.2 || isActive) {
-        const fontSize = Math.max(10 / globalScale, 3)
-        ctx.font = `${isActive ? 'bold ' : ''}${fontSize}px sans-serif`
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'top'
-        ctx.fillStyle = isActive ? '#1e40af' : '#475569'
-
-        // Truncate long IDs
-        const label = node.id.length > 12 ? node.id.slice(0, 10) + '…' : node.id
-        ctx.fillText(label, x, y + radius + 2 / globalScale)
-
-        // Show labels as small badges
-        if (node.labels.length > 0 && (globalScale > 2 || isActive)) {
-          const badgeFont = Math.max(8 / globalScale, 2.5)
-          ctx.font = `${badgeFont}px sans-serif`
-          ctx.fillStyle = '#6366f1'
-          ctx.fillText(node.labels.join(', '), x, y + radius + (fontSize + 4) / globalScale)
-        }
-      }
     },
     [currentNodeId],
   )
@@ -317,11 +366,26 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
       ctx.closePath()
       ctx.fillStyle = 'rgba(148, 163, 184, 0.5)'
       ctx.fill()
+
+      // Edge labels only on extreme zoom
+      if (link.label && globalScale > 4) {
+        const midX = (src.x + tgt.x) / 2
+        const midY = ((src.y ?? 0) + (tgt.y ?? 0)) / 2
+        const fontSize = Math.max(6 / globalScale, 1.5)
+        ctx.font = `${fontSize}px sans-serif`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillStyle = 'rgba(148, 163, 184, 0.6)'
+        ctx.fillText(link.label, midX, midY - 2 / globalScale)
+      }
     },
     [],
   )
 
-  const progressPct = total > 0 ? Math.round((visited / total) * 100) : 0
+  // Don't render if no traversal events
+  if (traversalEvents.length === 0) return null
+
+  const progressPct = done ? 100 : total > 0 ? Math.round((visited / total) * 100) : 0
 
   return (
     <Card>
@@ -335,10 +399,13 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
               </Badge>
             )}
             <Badge variant="outline" className="text-xs tabular-nums">
-              {visited}/{total} nodes
+              {visited}/{total} traversed
+            </Badge>
+            <Badge variant="outline" className="text-xs tabular-nums">
+              {graphData.nodes.length} nodes · {graphData.links.length} edges
             </Badge>
             {done && (
-              <Badge className="bg-green-600 text-white text-xs">Complete</Badge>
+              <Badge variant="success" className="text-xs">Complete</Badge>
             )}
           </div>
         </div>
@@ -347,11 +414,11 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
         {/* Legend */}
         <div className="flex items-center gap-4 mb-3 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+            <span className="inline-block w-2.5 h-2.5 rounded-full bg-primary animate-pulse" />
             Processing
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" />
+            <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500/40" />
             Completed
           </div>
           <div className="flex items-center gap-1.5">
@@ -366,41 +433,43 @@ export default function GraphVisualization({ wsEvents }: GraphVisualizationProps
         {/* Graph canvas */}
         <div
           ref={containerRef}
-          className="rounded-lg border bg-slate-950/5 dark:bg-slate-50/5 overflow-hidden"
-          style={{ height: 400 }}
+          className="rounded-lg border bg-slate-950/5 dark:bg-slate-50/5"
+          style={{ height: 600, position: 'relative' }}
         >
-          <ForceGraph2D
-            ref={graphRef as React.MutableRefObject<never>}
-            graphData={graphData}
-            width={dimensions.width}
-            height={dimensions.height}
-            nodeCanvasObject={nodeCanvasObject as never}
-            linkCanvasObject={linkCanvasObject as never}
-            nodeId="id"
-            cooldownTicks={graphData.nodes.length > 50 ? 80 : 150}
-            d3AlphaDecay={0.02}
-            d3VelocityDecay={0.3}
-            enableZoomInteraction={true}
-            enablePanInteraction={true}
-            backgroundColor="transparent"
-            nodeLabel={(node: GraphNode) => {
-              const parts = [`Node: ${node.id}`]
-              if (node.labels.length) parts.push(`Labels: ${node.labels.join(', ')}`)
-              parts.push(`State: ${node.state}`)
-              parts.push(`Depth: ${node.depth}`)
-              if (node.conversations) parts.push(`Conversations: ${node.conversations}`)
-              if (node.pathsAnalyzed) parts.push(`Paths analyzed: ${node.pathsAnalyzed}`)
-              return parts.join('\n')
-            }}
-          />
+          {dimensions && (
+            <ForceGraph2D
+              ref={graphRef as React.MutableRefObject<never>}
+              graphData={graphData}
+              width={dimensions.width}
+              height={dimensions.height}
+              nodeCanvasObject={nodeCanvasObject as never}
+              linkCanvasObject={linkCanvasObject as never}
+              nodeId="id"
+              cooldownTicks={graphData.nodes.length > 50 ? 80 : 150}
+              d3AlphaDecay={0.02}
+              d3VelocityDecay={0.3}
+              enableZoomInteraction={true}
+              enablePanInteraction={true}
+              onEngineStop={() => graphRef.current?.zoomToFit(400, 60)}
+              backgroundColor="transparent"
+              nodeLabel={(node: GraphNode) => {
+                const parts = [node.id]
+                if (node.labels.length) parts.push(node.labels.join(', '))
+                parts.push(node.state)
+                if (node.conversations) parts.push(`${node.conversations} conversations`)
+                if (node.pathsAnalyzed) parts.push(`${node.pathsAnalyzed} paths`)
+                return parts.join(' · ')
+              }}
+            />
+          )}
         </div>
 
         {/* Progress bar */}
-        {total > 0 && (
+        {(total > 0 || visited > 0) && (
           <div className="flex items-center gap-2 mt-3">
             <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500"
+                className="h-full rounded-full bg-primary transition-all duration-500"
                 style={{ width: `${progressPct}%` }}
               />
             </div>

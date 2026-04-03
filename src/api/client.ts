@@ -1,7 +1,22 @@
 /**
- * API base URL: use VITE_API_URL when set (e.g. different host).
- * When unset, use /api so Vite dev proxy (vite.config.ts) forwards to the backend.
+ * API client — strictly typed REST + WebSocket calls.
  */
+import type {
+  PipelineConfigPayload,
+  PipelineRunResultResponse,
+  InferenceLLMRequest,
+  InferenceLLMResponse,
+  InferenceGraphRAGRequest,
+  InferenceGraphRAGResponse,
+  InferenceFinetunedRequest,
+  InferenceFinetunedResponse,
+  AvailableModel,
+  RegisteredModel,
+  RegisterModelRequest,
+} from '../types/config'
+
+// ===== Base URL =====
+
 const getBaseUrl = (): string => {
   const env = import.meta.env?.VITE_API_URL
   if (env && typeof env === 'string' && env.trim() !== '') {
@@ -12,7 +27,15 @@ const getBaseUrl = (): string => {
 
 export const apiBase = getBaseUrl()
 
-export async function runPipeline(config: Record<string, unknown>, asyncRun = true): Promise<RunResponse> {
+// ===== Pipeline endpoints =====
+
+export interface RunResponse {
+  run_id: string
+  status: string
+  message?: string
+}
+
+export async function runPipeline(config: PipelineConfigPayload, asyncRun = true): Promise<RunResponse> {
   const url = `${apiBase}/pipelines/run${asyncRun ? '?async=true' : ''}`
   const res = await fetch(url, {
     method: 'POST',
@@ -26,48 +49,15 @@ export async function runPipeline(config: Record<string, unknown>, asyncRun = tr
   return res.json()
 }
 
+export type RunResultResponse = PipelineRunResultResponse
+
 export async function getRunStatus(runId: string): Promise<RunResultResponse> {
   const res = await fetch(`${apiBase}/pipelines/runs/${runId}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    const detail = (body as { detail?: string }).detail
-    throw new Error(detail ? `${res.status}: ${detail}` : res.statusText)
+    throw new Error((body as { detail?: string }).detail || res.statusText)
   }
   return res.json()
-}
-
-/** URL for downloading a run artifact (chatml, prepared dataset, or eval report). */
-export function getRunArtifactUrl(runId: string, artifactKey: 'chatml' | 'prepared' | 'eval_report'): string {
-  return `${apiBase}/pipelines/runs/${runId}/artifacts/${artifactKey}`
-}
-
-/** Fetch run artifact and trigger browser download. */
-export async function downloadRunArtifact(
-  runId: string,
-  artifactKey: 'chatml' | 'prepared' | 'eval_report'
-): Promise<void> {
-  const url = getRunArtifactUrl(runId, artifactKey)
-  const res = await fetch(url)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    const detail = (body as { detail?: string }).detail
-    throw new Error(detail || res.statusText)
-  }
-  const blob = await res.blob()
-  const disposition = res.headers.get('Content-Disposition')
-  const match = disposition?.match(/filename="?([^";]+)"?/)
-  const filename = match
-    ? match[1].trim()
-    : artifactKey === 'chatml'
-      ? 'dataset.jsonl'
-      : artifactKey === 'prepared'
-        ? 'prepared.jsonl'
-        : 'eval_report.json'
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(a.href)
 }
 
 export interface RunSummary {
@@ -84,51 +74,159 @@ export async function listRuns(): Promise<RunSummary[]> {
   return data.runs
 }
 
-export async function healthCheck(): Promise<{ status: string }> {
-  const res = await fetch(`${apiBase}/health`)
-  if (!res.ok) throw new Error(res.statusText)
-  return res.json()
-}
-
 export interface RunEventsResponse {
   run_id: string
   events: WsEvent[]
   total: number
 }
 
-/** Fetch stored events for a run (for replaying progress on historical runs). */
 export async function getRunEvents(runId: string, since = 0): Promise<RunEventsResponse> {
   const res = await fetch(`${apiBase}/pipelines/runs/${runId}/events?since=${since}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    const detail = (body as { detail?: string }).detail
-    throw new Error(detail ? `${res.status}: ${detail}` : res.statusText)
+    throw new Error((body as { detail?: string }).detail || res.statusText)
   }
   return res.json()
 }
 
-export function getWebSocketUrl(): string {
-  const base = apiBase || (typeof location !== 'undefined' ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}` : 'ws://localhost:8000')
-  const wsPath = base.replace(/^http/, 'ws')
-  return `${wsPath}/ws`
+export async function stopRun(runId: string): Promise<{ run_id: string; message: string }> {
+  const res = await fetch(`${apiBase}/pipelines/runs/${runId}/stop`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
 }
 
-export interface RunResponse {
-  run_id: string
-  status: string
-  message?: string
+export function getRunArtifactUrl(runId: string, artifactKey: 'chatml' | 'prepared' | 'eval_report'): string {
+  return `${apiBase}/pipelines/runs/${runId}/artifacts/${artifactKey}`
 }
 
-export interface RunResultResponse {
-  run_id: string
-  status: string
-  success: boolean
-  context?: Record<string, unknown>
-  results?: Array<{ success: boolean; error?: string; metadata?: Record<string, unknown> }>
-  error?: string
-  stages?: string[]
-  current_stage?: string
+export async function downloadRunArtifact(runId: string, artifactKey: 'chatml' | 'prepared' | 'eval_report'): Promise<void> {
+  const url = getRunArtifactUrl(runId, artifactKey)
+  const res = await fetch(url)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { detail?: string }).detail || res.statusText)
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get('Content-Disposition')
+  const match = disposition?.match(/filename="?([^";]+)"?/)
+  const filename = match?.[1]?.trim() ?? (artifactKey === 'chatml' ? 'dataset.jsonl' : artifactKey === 'prepared' ? 'prepared.jsonl' : 'eval_report.json')
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
 }
+
+// ===== File uploads =====
+
+export interface FileUploadResponse {
+  path: string
+}
+
+export async function uploadFile(file: File): Promise<FileUploadResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(`${apiBase}/pipelines/uploads`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+// ===== Health =====
+
+export async function healthCheck(): Promise<{ status: string }> {
+  const res = await fetch(`${apiBase}/health`)
+  if (!res.ok) throw new Error(res.statusText)
+  return res.json()
+}
+
+// ===== Inference endpoints =====
+
+export async function inferenceLLM(body: InferenceLLMRequest): Promise<InferenceLLMResponse> {
+  const res = await fetch(`${apiBase}/inference/llm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+export async function inferenceGraphRAG(body: InferenceGraphRAGRequest): Promise<InferenceGraphRAGResponse> {
+  const res = await fetch(`${apiBase}/inference/graphrag`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+export async function listModels(): Promise<AvailableModel[]> {
+  const res = await fetch(`${apiBase}/inference/models`)
+  if (!res.ok) throw new Error(res.statusText)
+  const data = (await res.json()) as { models: AvailableModel[] }
+  return data.models
+}
+
+export async function listRegisteredModels(): Promise<RegisteredModel[]> {
+  const res = await fetch(`${apiBase}/inference/models/registered`)
+  if (!res.ok) throw new Error(res.statusText)
+  const data = (await res.json()) as { models: RegisteredModel[] }
+  return data.models
+}
+
+export async function registerModel(body: RegisterModelRequest): Promise<RegisteredModel> {
+  const res = await fetch(`${apiBase}/inference/models/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+export async function unregisterModel(modelId: string): Promise<void> {
+  const res = await fetch(`${apiBase}/inference/models/registered/${encodeURIComponent(modelId)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+}
+
+export async function inferenceFinetuned(body: InferenceFinetunedRequest): Promise<InferenceFinetunedResponse> {
+  const res = await fetch(`${apiBase}/inference/finetuned`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || res.statusText)
+  }
+  return res.json()
+}
+
+// ===== WebSocket types & client =====
 
 export interface TraversalProgressEvent {
   event: 'traversal_progress'
@@ -139,27 +237,68 @@ export interface TraversalProgressEvent {
   visited?: number
   total?: number
   step?: string
-  // subgraph_loaded
   node_count?: number
   edge_count?: number
   path_count?: number
-  // path_reasoning
+  center?: { id: string; labels: string[]; properties: Record<string, string> }
+  nodes?: { id: string; labels: string[]; properties?: Record<string, string> }[]
+  edges?: { source: string; target: string; type: string }[]
   path_index?: number
   total_paths?: number
   path_description?: string
-  // node_done
   dataset_size?: number
   paths_analyzed?: number
   conversations?: number
-  // traversal_start / traversal_complete
   strategy?: string
   seed_nodes?: number
   max_nodes?: number
   max_depth?: number
-  // synthesis
   path_analyses_count?: number
-  // reasoning
   reasoning_depth?: number
+  neighbors?: { id: string; labels: string[]; relationship_type?: string }[]
+  status?: string
+  // Alignment fields
+  quality_scores?: Record<string, number>
+  alignment?: { quality_filtered?: number; quality_threshold?: number; domain_focus?: string; has_reference_texts?: boolean }
+}
+
+export interface EvalProgressEvent {
+  event: 'eval_progress'
+  type: string
+  system_id?: string
+  label?: string
+  kind?: string
+  index?: number
+  total?: number
+  sample_index?: number
+  total_samples?: number
+  total_predictions?: number
+  latency_sec?: number
+  tokens_per_sec?: number
+  scorers?: string[]
+  scores?: Record<string, Record<string, number | null>>
+  num_samples?: number
+  active_systems?: string[]
+  aggregate_metrics?: Record<string, Record<string, number>>
+  status?: string
+}
+
+export interface FinetunerProgressEvent {
+  event: 'finetuner_progress'
+  type: string
+  model_name?: string
+  train_samples?: number
+  eval_samples?: number
+  step?: number
+  total_steps?: number
+  epoch?: number
+  total_epochs?: number
+  loss?: number
+  learning_rate?: number
+  grad_norm?: number
+  train_loss?: number
+  batch_size?: number
+  output_dir?: string
 }
 
 export type WsEvent =
@@ -167,10 +306,14 @@ export type WsEvent =
   | { event: 'pipeline_start'; stages: string[] }
   | { event: 'stage_start'; stage: string }
   | { event: 'stage_end'; stage: string; success: boolean; error?: string; metadata?: Record<string, unknown> }
-  | { event: 'done'; success: boolean; context?: Record<string, unknown>; results?: unknown[] }
+  | { event: 'done'; success: boolean; cancelled?: boolean; context?: Record<string, unknown>; results?: unknown[] }
   | { event: 'error'; message: string }
   | { event: 'log'; level: string; logger: string; message: string }
+  | { event: 'stop_acknowledged'; run_id: string }
+  | { event: 'stop_requested' }
   | TraversalProgressEvent
+  | EvalProgressEvent
+  | FinetunerProgressEvent
 
 export interface WsRunCallbacks {
   onRunId: (runId: string) => void
@@ -180,15 +323,18 @@ export interface WsRunCallbacks {
   onConnectionChange?: (connected: boolean) => void
 }
 
-/**
- * Run pipeline via WebSocket for live progress. Calls onRunId with run_id from run_start,
- * onEvent for each event, onDone with final result, onError on connection/error event.
- * Returns a close function to abort the connection.
- */
-export function runPipelineViaWebSocket(
-  config: Record<string, unknown>,
-  callbacks: WsRunCallbacks
-): () => void {
+export function getWebSocketUrl(): string {
+  const base = apiBase || (typeof location !== 'undefined' ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}` : 'ws://localhost:8000')
+  const wsPath = base.replace(/^http/, 'ws')
+  return `${wsPath}/ws`
+}
+
+export interface WsRunHandle {
+  close: () => void
+  stop: () => void
+}
+
+export function runPipelineViaWebSocket(config: PipelineConfigPayload, callbacks: WsRunCallbacks): WsRunHandle {
   const wsUrl = getWebSocketUrl()
   const ws = new WebSocket(wsUrl)
   let closed = false
@@ -197,11 +343,12 @@ export function runPipelineViaWebSocket(
   const close = () => {
     if (closed) return
     closed = true
-    try {
-      ws.close()
-    } catch {
-      // ignore
-    }
+    try { ws.close() } catch { /* ignore */ }
+  }
+
+  const stop = () => {
+    if (closed || !runId) return
+    try { ws.send(JSON.stringify({ action: 'stop', run_id: runId })) } catch { /* ignore */ }
   }
 
   ws.onopen = () => {
@@ -228,14 +375,12 @@ export function runPipelineViaWebSocket(
             context: d.context,
             results: d.results as RunResultResponse['results'],
           })
-          close()
+          // Don't close WebSocket — keep alive for viewing results
           break
         }
         case 'error':
           callbacks.onError((payload as { event: 'error'; message: string }).message)
-          close()
-          break
-        default:
+          // Don't close WebSocket — keep alive for retry/viewing
           break
       }
     } catch (e) {
@@ -244,17 +389,8 @@ export function runPipelineViaWebSocket(
     }
   }
 
-  ws.onerror = () => {
-    if (!closed) {
-      callbacks.onError('WebSocket error')
-      close()
-    }
-  }
+  ws.onerror = () => { if (!closed) { callbacks.onError('WebSocket error'); close() } }
+  ws.onclose = () => { callbacks.onConnectionChange?.(false); if (!closed) close() }
 
-  ws.onclose = () => {
-    callbacks.onConnectionChange?.(false)
-    if (!closed) close()
-  }
-
-  return close
+  return { close, stop }
 }
